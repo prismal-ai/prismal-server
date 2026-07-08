@@ -24,7 +24,7 @@ classifiers = [
 # The engine. PyPI distribution is `prismal-ai`; the import module is `prismal`.
 # Pinned per SPEC-RHB-NFR-004: the host couples only to the four engine seams.
 dependencies = [
-    "prismal-ai>=3.10,<4",
+    "prismal-ai>=3.10.1,<4",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.10",
@@ -51,19 +51,6 @@ packages = ["src/prismal_server"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/prismal_server", "README.md", "LICENSE"]
-
-# ── Packaging workaround ─────────────────────────────────────────────────────
-# The published `prismal-ai` sdist fresh-resolves `unstructured`'s dependency
-# tree to an ancient `numba` (0.53.1, Python <3.10 only), which cannot build on
-# 3.13. These constraints float the transitive deps up to the same versions the
-# engine's own uv.lock uses, so the host installs cleanly. Pure packaging — no
-# engine logic — and safe to drop once the engine publishes fixed metadata.
-[tool.uv]
-constraint-dependencies = [
-    "numba>=0.61.2",
-    "llvmlite>=0.44.0",
-    "unstructured>=0.21.5",
-]
 
 # ── Tooling ────────────────────────────────────────────────────────────────
 
