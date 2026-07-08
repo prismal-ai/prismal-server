@@ -36,11 +36,11 @@ to `SPEC-RHB-*` IDs and the `M0…M5` milestones in `PLAN.md`.
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RHB-02-01 | `streaming.py`: SSE framing helper (`event:`/`data:`), heartbeat generator, `astream → SSE` bridge with cancellation | 0.6 d | 01-03 | CHT-002/003/004 | `TODO` |
-| RHB-02-02 | `routes/threads.py`: `POST /threads` mints opaque `thread_id` | 0.2 d | 02-01 | THR-002 | `TODO` |
-| RHB-02-03 | `routes/threads.py`: `POST /threads/{id}/messages` → resolve runtime + `get_async_compiled_graph` + `astream` as `text/event-stream` | 0.7 d | 02-01 | CHT-001, THR-001/003 | `TODO` |
-| RHB-02-04 | Mid-stream failure → terminal `error` SSE event (status already 200) | 0.3 d | 02-03 | CHT-006 | `TODO` |
-| RHB-02-05 | Client-disconnect cancels the `astream` task (no orphaned work) — test with a slow fake graph | 0.4 d | 02-03 | CHT-004 | `TODO` |
+| RHB-02-01 | `streaming.py`: SSE framing helper (`event:`/`data:`), heartbeat generator, `astream → SSE` bridge with cancellation | 0.6 d | 01-03 | CHT-002/003/004 | `DONE` |
+| RHB-02-02 | `routes/threads.py`: `POST /threads` mints opaque `thread_id` | 0.2 d | 02-01 | THR-002 | `DONE` |
+| RHB-02-03 | `routes/threads.py`: `POST /threads/{id}/messages` → resolve runtime + `get_async_compiled_graph` + `astream` as `text/event-stream` | 0.7 d | 02-01 | CHT-001, THR-001/003 | `DONE` |
+| RHB-02-04 | Mid-stream failure → terminal `error` SSE event (status already 200) | 0.3 d | 02-03 | CHT-006 | `DONE` |
+| RHB-02-05 | Client-disconnect cancels the `astream` task (no orphaned work) — test with a slow fake graph | 0.4 d | 02-03 | CHT-004 | `DONE` |
 
 ## Phase 3 — A2A reachable (M3)
 

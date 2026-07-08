@@ -30,6 +30,15 @@ class RuntimeBuilder(Protocol):
     def __call__(self, *, org_id: str | None) -> Awaitable[Any]: ...
 
 
+class GraphFactory(Protocol):
+    """Returns a compiled graph. Defaults to the engine ``get_async_compiled_graph``.
+
+    Injectable so route tests supply a fake graph and never touch a live LLM.
+    """
+
+    def __call__(self, *, tool_provider: Any = None) -> Awaitable[Any]: ...
+
+
 async def _default_builder(*, org_id: str | None) -> Any:
     """Compose a real ``RuntimeContext`` for ``org_id`` via the engine seam."""
     return await build_runtime(org_id=org_id)

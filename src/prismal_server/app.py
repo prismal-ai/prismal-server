@@ -16,24 +16,33 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
+from prismal.agents.graph import get_async_compiled_graph
 
 from prismal_server import __version__
 from prismal_server.config import HostSettings, get_settings
-from prismal_server.deps import RuntimeRegistry
+from prismal_server.deps import GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
-from prismal_server.routes import health
+from prismal_server.routes import health, threads
+
+
+async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
+    """Obtain the compiled graph via the Execution seam."""
+    return await get_async_compiled_graph(tool_provider=tool_provider)
 
 
 def create_app(
     *,
     registry: RuntimeRegistry | None = None,
     settings: HostSettings | None = None,
+    graph_factory: GraphFactory | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app, optionally with an injected registry/settings."""
+    """Build the FastAPI app, optionally with an injected registry/settings/graph."""
     settings = settings or get_settings()
     registry = registry or RuntimeRegistry(settings)
+    graph_factory = graph_factory or _default_graph_factory
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -55,9 +64,11 @@ def create_app(
     # Eagerly available so ASGI clients that don't run lifespan still resolve it.
     app.state.settings = settings
     app.state.registry = registry
+    app.state.graph_factory = graph_factory
 
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(threads.router)
     return app
 
 
