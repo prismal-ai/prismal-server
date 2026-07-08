@@ -17,11 +17,16 @@ bare ``FastAPI`` app until then, so the scaffold's plumbing is testable now.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+
+from prismal_server.app import create_app
+from prismal_server.config import HostSettings
+from prismal_server.deps import RuntimeRegistry
 
 
 @pytest.fixture
@@ -37,21 +42,24 @@ def fake_runtime():  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture
-def app() -> FastAPI:
-    """The ASGI app under test.
+def fake_registry() -> RuntimeRegistry:
+    """A ``RuntimeRegistry`` whose builder returns engine fakes — no live I/O.
 
-    Prefers ``prismal_server.app.create_app()`` (Phase 1 onward); until that
-    factory lands the module is a stub, so we fall back to a bare app to keep
-    the ASGI/client plumbing exercisable during the scaffold phase.
+    This is the injected fake registry from SPEC-RHB-LIF-003, keeping route
+    tests off any real ``build_runtime`` composition (SPEC-RHB-NFR-003).
     """
-    try:
-        from prismal_server.app import create_app  # type: ignore[attr-defined]
-    except ImportError:
-        create_app = None  # type: ignore[assignment]
+    from prismal.composition import build_test_runtime
 
-    if callable(create_app):
-        return create_app()
-    return FastAPI(title="prismal-server (scaffold)")
+    async def builder(*, org_id: str | None) -> Any:
+        return build_test_runtime(org_id=org_id)
+
+    return RuntimeRegistry(HostSettings(), builder=builder)
+
+
+@pytest.fixture
+def app(fake_registry: RuntimeRegistry) -> FastAPI:
+    """The ASGI app under test, wired to the fake runtime registry."""
+    return create_app(registry=fake_registry)
 
 
 @pytest_asyncio.fixture

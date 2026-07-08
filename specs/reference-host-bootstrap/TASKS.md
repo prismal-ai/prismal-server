@@ -26,11 +26,11 @@ to `SPEC-RHB-*` IDs and the `M0…M5` milestones in `PLAN.md`.
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RHB-01-01 | `config.py`: `HostSettings` (pydantic-settings, `PRISMAL_SERVER_` prefix, `SecretStr` for secrets) | 0.3 d | 00-02 | CFG-001/002 | `TODO` |
-| RHB-01-02 | `deps.py`: `RuntimeRegistry` — lazy per-`org_id` `build_runtime`, single-flight lock, `aclose_all()` | 0.6 d | 01-01 | LIF-004, TEN-002 | `TODO` |
-| RHB-01-03 | `app.py`: `create_app()` factory + lifespan (startup registry, shutdown `aclose_all`) | 0.4 d | 01-02 | LIF-001/002/003 | `TODO` |
-| RHB-01-04 | `routes/health.py`: `GET /healthz` (liveness), `GET /readyz` (default runtime composed) | 0.3 d | 01-03 | HLT-001/002/003 | `TODO` |
-| RHB-01-05 | `errors.py`: engine-exception → HTTP mapping + JSON error body; register exception handlers | 0.4 d | 01-03 | ERR-001/002/003 | `TODO` |
+| RHB-01-01 | `config.py`: `HostSettings` (pydantic-settings, `PRISMAL_SERVER_` prefix, `SecretStr` for secrets) | 0.3 d | 00-02 | CFG-001/002 | `DONE` |
+| RHB-01-02 | `deps.py`: `RuntimeRegistry` — lazy per-`org_id` `build_runtime`, single-flight lock, `aclose_all()` | 0.6 d | 01-01 | LIF-004, TEN-002 | `DONE` |
+| RHB-01-03 | `app.py`: `create_app()` factory + lifespan (startup registry, shutdown `aclose_all`) | 0.4 d | 01-02 | LIF-001/002/003 | `DONE` |
+| RHB-01-04 | `routes/health.py`: `GET /healthz` (liveness), `GET /readyz` (default runtime composed) | 0.3 d | 01-03 | HLT-001/002/003 | `DONE` |
+| RHB-01-05 | `errors.py`: engine-exception → HTTP mapping + JSON error body; register exception handlers | 0.4 d | 01-03 | ERR-001/002/003 | `DONE` |
 
 ## Phase 2 — Streaming chat (M2)
 

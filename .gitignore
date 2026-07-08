@@ -219,3 +219,6 @@ __marimo__/
 
 # Ignore JetBrains IDE project files
 .idea/
+
+# Engine runtime artifacts (checkpointer db, etc.)
+data/
