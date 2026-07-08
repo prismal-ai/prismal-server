@@ -46,11 +46,16 @@ to `SPEC-RHB-*` IDs and the `M0…M5` milestones in `PLAN.md`.
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RHB-03-01 | `routes/a2a.py`: `GET /.well-known/agent-card.json` via `build_agent_card(...)`, cached per `(settings,org)` | 0.4 d | 01-03 | A2A-001 | `TODO` |
-| RHB-03-02 | `routes/a2a.py`: `POST /a2a` → `RuntimeContext.a2a_handler.handle_rpc` (non-stream) | 0.4 d | 03-01 | A2A-002 | `TODO` |
-| RHB-03-03 | `POST /a2a` SSE-streaming path via `stream_rpc` | 0.4 d | 03-02 | A2A-002 | `TODO` |
-| RHB-03-04 | Gating: `a2a_enabled=false` → `404`; `a2a_strict` unauth → JSON-RPC `-32001` | 0.3 d | 03-02 | A2A-004/005 | `TODO` |
-| RHB-03-05 | Assert host does not re-sanitize/re-audit (handler owns it) — verified by the import-guard + a behavioural test | 0.2 d | 03-02 | A2A-003 | `TODO` |
+| RHB-03-01 | `routes/a2a.py`: `GET /.well-known/agent-card.json` via `build_agent_card(...)`, cached per `(settings,org)` | 0.4 d | 01-03 | A2A-001 | `DONE` |
+| RHB-03-02 | `routes/a2a.py`: `POST /a2a` → `RuntimeContext.a2a_handler.handle_rpc` (non-stream) | 0.4 d | 03-01 | A2A-002 | `DONE` |
+| RHB-03-03 | `POST /a2a` SSE-streaming path via `stream_rpc` | 0.4 d | 03-02 | A2A-002 | `DONE` |
+| RHB-03-04 | Gating: `a2a_enabled=false` → `404`; `a2a_strict` unauth → JSON-RPC `-32001` | 0.3 d | 03-02 | A2A-004/005 | `DONE` |
+| RHB-03-05 | Assert host does not re-sanitize/re-audit (handler owns it) — verified by the import-guard + a behavioural test | 0.2 d | 03-02 | A2A-003 | `DONE` |
+
+> RHB-03-01 depends on the engine re-exporting `get_settings` + `DEFAULT_CAPABILITY_MAP`
+> from `prismal.a2a` (host imports the card inputs only from the A2A seam). Host code is
+> complete and the real card build is verified against the re-exporting engine; the card
+> route serves a `500` until that engine change is published and the pin is bumped.
 
 ## Phase 4 — Auth + tenancy (M4)
 

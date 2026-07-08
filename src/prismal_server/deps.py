@@ -17,6 +17,7 @@ import logging
 from collections.abc import Awaitable
 from typing import Any, Protocol
 
+from prismal.agents.graph import get_async_compiled_graph
 from prismal.composition.runtime import build_runtime
 
 from prismal_server.config import HostSettings
@@ -39,9 +40,25 @@ class GraphFactory(Protocol):
     def __call__(self, *, tool_provider: Any = None) -> Awaitable[Any]: ...
 
 
+class AgentCardBuilder(Protocol):
+    """Builds the A2A Agent Card dict for a tenant (camelCase wire form).
+
+    Injectable so route tests supply a fake and never import the engine card.
+    """
+
+    def __call__(self, *, org_id: str | None) -> dict[str, Any]: ...
+
+
 async def _default_builder(*, org_id: str | None) -> Any:
-    """Compose a real ``RuntimeContext`` for ``org_id`` via the engine seam."""
-    return await build_runtime(org_id=org_id)
+    """Compose a real ``RuntimeContext`` for ``org_id`` via the engine seams.
+
+    A compiled graph is passed so ``build_runtime`` can wire the inbound A2A
+    handler (``RuntimeContext.a2a_handler``) when the engine has
+    ``a2a_inbound_enabled``; ``get_async_compiled_graph`` is a cached singleton,
+    so this stays cheap for non-A2A runtimes too.
+    """
+    graph = await get_async_compiled_graph()
+    return await build_runtime(org_id=org_id, graph=graph)
 
 
 class RuntimeRegistry:

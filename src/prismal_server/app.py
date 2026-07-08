@@ -16,16 +16,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
 from prismal.agents.graph import get_async_compiled_graph
 
 from prismal_server import __version__
 from prismal_server.config import HostSettings, get_settings
-from prismal_server.deps import GraphFactory, RuntimeRegistry
+from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
-from prismal_server.routes import health, threads
+from prismal_server.routes import a2a, health, threads
 
 
 async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
@@ -33,16 +33,39 @@ async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
     return await get_async_compiled_graph(tool_provider=tool_provider)
 
 
+def _default_agent_card_builder(*, org_id: str | None = None) -> dict[str, Any]:
+    """Build the Agent Card via the A2A seam (camelCase wire form).
+
+    Imports are deferred and sourced only from ``prismal.a2a`` (the seam
+    re-exports the engine settings + capability map), so the host never reaches
+    past the A2A seam and module import stays independent of that re-export.
+    """
+    from prismal.a2a import (  # noqa: PLC0415 - deferred to keep import off the base path
+        DEFAULT_CAPABILITY_MAP,
+        build_agent_card,
+    )
+    from prismal.a2a import (
+        get_settings as get_engine_settings,
+    )
+
+    card = build_agent_card(
+        get_engine_settings(), DEFAULT_CAPABILITY_MAP, org_id=org_id
+    )
+    return cast("dict[str, Any]", card.model_dump(by_alias=True))
+
+
 def create_app(
     *,
     registry: RuntimeRegistry | None = None,
     settings: HostSettings | None = None,
     graph_factory: GraphFactory | None = None,
+    agent_card_builder: AgentCardBuilder | None = None,
 ) -> FastAPI:
-    """Build the FastAPI app, optionally with an injected registry/settings/graph."""
+    """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
     registry = registry or RuntimeRegistry(settings)
     graph_factory = graph_factory or _default_graph_factory
+    agent_card_builder = agent_card_builder or _default_agent_card_builder
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -65,10 +88,13 @@ def create_app(
     app.state.settings = settings
     app.state.registry = registry
     app.state.graph_factory = graph_factory
+    app.state.agent_card_builder = agent_card_builder
+    app.state.agent_card_cache = {}
 
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(threads.router)
+    app.include_router(a2a.router)
     return app
 
 

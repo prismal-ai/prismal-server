@@ -50,6 +50,10 @@ class HostSettings(BaseSettings):
     # Multi-tenancy
     host_max_tenants: int = 32
 
+    # Inbound A2A: gates route presence on the host (404 when off). The engine's
+    # own a2a_inbound_enabled / a2a_strict govern the handler and strictness.
+    a2a_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> HostSettings:
