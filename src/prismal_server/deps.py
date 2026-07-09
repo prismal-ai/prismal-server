@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Awaitable
 from typing import Any, Protocol
 
@@ -62,29 +63,53 @@ async def _default_builder(*, org_id: str | None) -> Any:
 
 
 class RuntimeRegistry:
-    """Per-``org_id`` cache of engine runtimes with coordinated teardown."""
+    """Per-``org_id`` cache of engine runtimes with coordinated teardown.
+
+    The cache is bounded to ``host_max_tenants`` live runtimes (LRU-closing the
+    least-recently-used tenant on overflow, SPEC-RHB-TEN-003); a non-positive cap
+    disables eviction (unbounded).
+    """
 
     def __init__(
         self, settings: HostSettings, *, builder: RuntimeBuilder | None = None
     ) -> None:
         self._settings = settings
         self._builder: RuntimeBuilder = builder or _default_builder
-        self._runtimes: dict[str | None, Any] = {}
+        self._runtimes: OrderedDict[str | None, Any] = OrderedDict()
+        self._max_tenants = settings.host_max_tenants
         self._lock = asyncio.Lock()
 
     async def get(self, org_id: str | None = None) -> Any:
         """Return the tenant runtime, building and caching it on first use."""
         cached = self._runtimes.get(org_id)
         if cached is not None:
+            self._runtimes.move_to_end(org_id)  # mark most-recently-used
             return cached
         async with self._lock:
             # Double-checked: another racer may have built it while we waited.
             cached = self._runtimes.get(org_id)
             if cached is not None:
+                self._runtimes.move_to_end(org_id)
                 return cached
             runtime = await self._builder(org_id=org_id)
             self._runtimes[org_id] = runtime
+            await self._evict_overflow()
             return runtime
+
+    async def _evict_overflow(self) -> None:
+        """LRU-close runtimes above the cap. Called under ``self._lock``."""
+        if self._max_tenants <= 0:
+            return
+        while len(self._runtimes) > self._max_tenants:
+            evicted_org, evicted = self._runtimes.popitem(last=False)
+            try:
+                await evicted.aclose()
+            except Exception:  # eviction teardown must not raise
+                logger.warning(
+                    "LRU runtime teardown failed for org_id=%s",
+                    evicted_org,
+                    exc_info=True,
+                )
 
     async def aclose_all(self) -> None:
         """Close every cached runtime, swallowing per-tenant errors.

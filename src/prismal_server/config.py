@@ -40,6 +40,7 @@ class HostSettings(BaseSettings):
     host_auth_backend: AuthBackend = "none"
     host_auth_strict: bool = False
     dev_identity_did: str = "did:key:zLocalDev"
+    dev_identity_agent_name: str = "local-dev"
     # Static bearer tokens (token → DID) for the dev/bearer backend. Secret by
     # construction so raw tokens never surface in logs or responses.
     bearer_static_tokens: dict[str, SecretStr] = {}

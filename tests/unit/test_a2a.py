@@ -50,8 +50,24 @@ def _registry_with_handler(handler: Any) -> RuntimeRegistry:
     return RuntimeRegistry(HostSettings(), builder=builder)
 
 
+class _UnauthBackend:
+    """Auth backend modelling a request with no credential (resolves to None).
+
+    A2A carries no ``Authorization`` header in these tests, so this mirrors what a
+    real ``bearer``/``oidc`` host would resolve — letting the engine handler own
+    strict-mode gating (JSON-RPC -32001), not the host.
+    """
+
+    async def resolve(self, request: Any) -> Any:
+        return None
+
+
 def _make_app(
-    *, handler: Any = None, a2a_enabled: bool = True, card: dict[str, Any] | None = None
+    *,
+    handler: Any = None,
+    a2a_enabled: bool = True,
+    card: dict[str, Any] | None = None,
+    auth_backend: Any = None,
 ):  # type: ignore[no-untyped-def]
     card = card if card is not None else {"name": "prismal", "protocolVersion": "0.3.0"}
     card_calls = {"n": 0}
@@ -64,6 +80,7 @@ def _make_app(
         settings=HostSettings(a2a_enabled=a2a_enabled),
         registry=_registry_with_handler(handler),
         agent_card_builder=card_builder,
+        auth_backend=auth_backend or _UnauthBackend(),
     )
     return app, card_calls
 
@@ -121,6 +138,27 @@ async def test_post_a2a_strict_unauth_returns_minus_32001() -> None:
         r = await c.post("/a2a", json=payload)
     assert r.status_code == 200
     assert r.json()["error"]["code"] == -32001
+
+
+async def test_post_a2a_authenticated_passes_auth_context() -> None:
+    """A resolved identity becomes an authenticated AuthContext for the handler."""
+    from prismal.identity import DID, AgentIdentity
+
+    class _StaticBackend:
+        async def resolve(self, request: Any) -> Any:
+            return AgentIdentity(did=DID("did:key:zAcme"), agent_name="svc")
+
+    handler = FakeHandler()
+    app, _ = _make_app(handler=handler, auth_backend=_StaticBackend())
+    payload = {"jsonrpc": "2.0", "id": "9", "method": "secure/op", "params": {}}
+    async with _client(app) as c:
+        r = await c.post("/a2a", json=payload)
+    # authenticated → handler does NOT emit the strict -32001
+    assert "error" not in r.json()
+    _, auth_ctx = handler.calls[0]
+    assert auth_ctx is not None
+    assert auth_ctx.authenticated is True
+    assert auth_ctx.did == "did:key:zAcme"
 
 
 async def test_post_a2a_streaming_uses_stream_rpc() -> None:

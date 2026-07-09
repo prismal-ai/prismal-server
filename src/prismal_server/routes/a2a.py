@@ -20,6 +20,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from prismal_server.auth import resolve_org_id
+
 router = APIRouter(tags=["a2a"])
 
 # JSON-RPC error emitted when the engine's inbound A2A handler is not composed.
@@ -29,6 +31,22 @@ _A2A_UNAVAILABLE = -32000
 def _require_enabled(request: Request) -> None:
     if not request.app.state.settings.a2a_enabled:
         raise HTTPException(status_code=404, detail="A2A is not enabled")
+
+
+def _to_auth_ctx(identity: Any) -> Any:
+    """Adapt a resolved ``AgentIdentity`` to the engine's A2A ``AuthContext``.
+
+    Unauthenticated requests pass ``None`` through so the handler applies its own
+    strict-mode gate (JSON-RPC ``-32001``); the host never enforces A2A auth
+    itself. ``AuthContext`` is sourced from the A2A seam.
+    """
+    if identity is None:
+        return None
+    from prismal.a2a import AuthContext  # noqa: PLC0415 - deferred to the A2A path
+
+    return AuthContext(
+        authenticated=True, subject=identity.agent_name, did=identity.did
+    )
 
 
 @router.get("/.well-known/agent-card.json")
@@ -49,7 +67,10 @@ async def agent_card(request: Request) -> JSONResponse:
 async def a2a_rpc(request: Request) -> Any:
     """Delegate a JSON-RPC call to the tenant's inbound A2A handler."""
     _require_enabled(request)
-    org_id = request.headers.get("X-Org-Id")
+    # Resolve identity for tenant selection + AuthContext; the host never rejects
+    # here (no 401) — the handler owns A2A strict-mode gating (JSON-RPC -32001).
+    identity = await request.app.state.auth_backend.resolve(request)
+    org_id = resolve_org_id(request, identity)
     payload = await request.json()
 
     runtime = await request.app.state.registry.get(org_id)
@@ -66,9 +87,7 @@ async def a2a_rpc(request: Request) -> Any:
             }
         )
 
-    # Phase 4 resolves an AgentIdentity → AuthContext here; for now pass None and
-    # let the handler enforce strict mode (JSON-RPC -32001) itself.
-    auth_ctx = None
+    auth_ctx = _to_auth_ctx(identity)
 
     if payload.get("method") == "message/stream":
         return StreamingResponse(

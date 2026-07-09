@@ -22,7 +22,7 @@ class FakeRuntime:
         self.closed = True
 
 
-def make_registry(**kw):  # type: ignore[no-untyped-def]
+def make_registry(*, settings: HostSettings | None = None, **kw):  # type: ignore[no-untyped-def]
     calls: list[str | None] = []
 
     async def builder(*, org_id: str | None):  # type: ignore[no-untyped-def]
@@ -30,7 +30,7 @@ def make_registry(**kw):  # type: ignore[no-untyped-def]
         await asyncio.sleep(0)  # yield, so concurrent callers can interleave
         return FakeRuntime(org_id, **kw)
 
-    return RuntimeRegistry(HostSettings(), builder=builder), calls
+    return RuntimeRegistry(settings or HostSettings(), builder=builder), calls
 
 
 async def test_get_builds_lazily_and_caches() -> None:
@@ -74,3 +74,25 @@ async def test_aclose_all_swallows_per_tenant_errors() -> None:
     await registry.get("globex")
     # Must not raise despite every aclose() raising.
     await registry.aclose_all()
+
+
+async def test_host_max_tenants_lru_closes_overflow() -> None:
+    """The live-tenant cap LRU-closes the least-recently-used runtime (TEN-003)."""
+    registry, _ = make_registry(settings=HostSettings(host_max_tenants=2))
+    a = await registry.get("a")
+    b = await registry.get("b")
+    # Touch "a" so "b" becomes least-recently-used.
+    await registry.get("a")
+    c = await registry.get("c")  # overflow → evict LRU ("b")
+    assert b.closed is True
+    assert a.closed is False and c.closed is False
+    # The evicted tenant rebuilds a fresh runtime on next use.
+    b2 = await registry.get("b")
+    assert b2 is not b
+
+
+async def test_host_max_tenants_zero_is_unbounded() -> None:
+    """A non-positive cap disables eviction (keeps every tenant live)."""
+    registry, _ = make_registry(settings=HostSettings(host_max_tenants=0))
+    runtimes = [await registry.get(f"org-{i}") for i in range(5)]
+    assert all(not r.closed for r in runtimes)

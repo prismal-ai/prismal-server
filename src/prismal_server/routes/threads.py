@@ -19,6 +19,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.streaming import sse_stream
 
 router = APIRouter(tags=["threads"])
@@ -43,8 +44,9 @@ async def post_message(
     thread_id: str, body: MessageIn, request: Request
 ) -> StreamingResponse:
     """Stream a chat turn for ``thread_id`` as Server-Sent Events."""
-    # Tenant resolution: Phase 4 adds identity; for now honour X-Org-Id (TEN-001).
-    org_id = request.headers.get("X-Org-Id")
+    # Resolve identity (401 in strict mode) then the tenant (TEN-001, AUT-005).
+    identity = await authenticate(request)
+    org_id = resolve_org_id(request, identity)
 
     registry = request.app.state.registry
     runtime = await registry.get(org_id)

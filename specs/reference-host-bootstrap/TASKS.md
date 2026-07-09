@@ -52,22 +52,22 @@ to `SPEC-RHB-*` IDs and the `M0…M5` milestones in `PLAN.md`.
 | RHB-03-04 | Gating: `a2a_enabled=false` → `404`; `a2a_strict` unauth → JSON-RPC `-32001` | 0.3 d | 03-02 | A2A-004/005 | `DONE` |
 | RHB-03-05 | Assert host does not re-sanitize/re-audit (handler owns it) — verified by the import-guard + a behavioural test | 0.2 d | 03-02 | A2A-003 | `DONE` |
 
-> RHB-03-01 depends on the engine re-exporting `get_settings` + `DEFAULT_CAPABILITY_MAP`
-> from `prismal.a2a` (host imports the card inputs only from the A2A seam). Host code is
-> complete and the real card build is verified against the re-exporting engine; the card
-> route serves a `500` until that engine change is published and the pin is bumped.
+> RHB-03-01 depended on the engine re-exporting `get_settings` + `DEFAULT_CAPABILITY_MAP`
+> from `prismal.a2a` (host imports the card inputs only from the A2A seam). Shipped in
+> **prismal-ai 3.10.2**; the host pin is bumped and `GET /.well-known/agent-card.json`
+> now serves a real card (verified E2E against the released engine).
 
 ## Phase 4 — Auth + tenancy (M4)
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RHB-04-01 | `auth/base.py`: `AuthBackend` Protocol (`resolve(request) -> AgentIdentity | None`, never raises) | 0.2 d | 01-03 | AUT-001 | `TODO` |
-| RHB-04-02 | `auth/noauth.py`: `NoAuthBackend` dev default (fixed configurable identity) | 0.2 d | 04-01 | AUT-002 | `TODO` |
-| RHB-04-03 | `auth/bearer.py`: `BearerTokenBackend` (static map / JWT claims → identity) | 0.4 d | 04-01 | AUT-003 | `TODO` |
-| RHB-04-04 | `auth/oidc.py`: `OidcAuthBackend` delegating to engine `OidcIdentityProvider` | 0.4 d | 04-01 | AUT-004 | `TODO` |
-| RHB-04-05 | Backend selection by `host_auth_backend`; `host_auth_strict` → `401` on protected routes | 0.3 d | 04-02 | AUT-005/006 | `TODO` |
-| RHB-04-06 | Tenant resolution: `identity.org_id` → `X-Org-Id` → `None`; wire into runtime selection + `config.org_id` | 0.4 d | 01-02, 04-01 | TEN-001/002 | `TODO` |
-| RHB-04-07 | `host_max_tenants` LRU-close of overflow runtimes | 0.3 d | 04-06 | TEN-003 | `TODO` |
+| RHB-04-01 | `auth/base.py`: `AuthBackend` Protocol (`resolve(request) -> AgentIdentity | None`, never raises) | 0.2 d | 01-03 | AUT-001 | `DONE` |
+| RHB-04-02 | `auth/noauth.py`: `NoAuthBackend` dev default (fixed configurable identity) | 0.2 d | 04-01 | AUT-002 | `DONE` |
+| RHB-04-03 | `auth/bearer.py`: `BearerTokenBackend` (static map / JWT claims → identity) | 0.4 d | 04-01 | AUT-003 | `DONE` |
+| RHB-04-04 | `auth/oidc.py`: `OidcAuthBackend` delegating to engine `OidcIdentityProvider` | 0.4 d | 04-01 | AUT-004 | `DONE` |
+| RHB-04-05 | Backend selection by `host_auth_backend`; `host_auth_strict` → `401` on protected routes | 0.3 d | 04-02 | AUT-005/006 | `DONE` |
+| RHB-04-06 | Tenant resolution: `identity.org_id` → `X-Org-Id` → `None`; wire into runtime selection + `config.org_id` | 0.4 d | 01-02, 04-01 | TEN-001/002 | `DONE` |
+| RHB-04-07 | `host_max_tenants` LRU-close of overflow runtimes | 0.3 d | 04-06 | TEN-003 | `DONE` |
 
 ## Phase 5 — Hardening & release (M5)
 

@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from prismal.agents.graph import get_async_compiled_graph
 
 from prismal_server import __version__
+from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
@@ -60,12 +61,14 @@ def create_app(
     settings: HostSettings | None = None,
     graph_factory: GraphFactory | None = None,
     agent_card_builder: AgentCardBuilder | None = None,
+    auth_backend: AuthBackend | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
     registry = registry or RuntimeRegistry(settings)
     graph_factory = graph_factory or _default_graph_factory
     agent_card_builder = agent_card_builder or _default_agent_card_builder
+    auth_backend = auth_backend or build_auth_backend(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -90,6 +93,7 @@ def create_app(
     app.state.graph_factory = graph_factory
     app.state.agent_card_builder = agent_card_builder
     app.state.agent_card_cache = {}
+    app.state.auth_backend = auth_backend
 
     register_exception_handlers(app)
     app.include_router(health.router)
