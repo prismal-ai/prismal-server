@@ -24,7 +24,7 @@ classifiers = [
 # The engine. PyPI distribution is `prismal-ai`; the import module is `prismal`.
 # Pinned per SPEC-RHB-NFR-004: the host couples only to the four engine seams.
 dependencies = [
-    "prismal-ai>=3.10.1,<4",
+    "prismal-ai>=3.10.2,<4",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.10",
