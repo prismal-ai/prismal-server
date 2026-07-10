@@ -69,11 +69,13 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.12
+        # The engine (prismal-ai) requires Python >=3.13, so the contract job
+        # (which installs the real engine) must match — 3.12 fails to resolve.
+        run: uv python install 3.13
 
       - name: Create venv and install (dev)
         run: |
-          uv venv --python 3.12
+          uv venv --python 3.13
           uv pip install -e ".[dev]"
 
       - name: pytest (contract — against released prismal)
