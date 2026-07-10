@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ignore JetBrains IDE project files
+.idea/
+
+# Engine runtime artifacts (checkpointer db, etc.)
+data/

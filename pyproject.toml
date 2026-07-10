@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismal-server"
+version = "0.1.0"
+description = "Reference host for the prismal agent engine — a thin FastAPI/ASGI process serving prismal over REST/SSE and inbound A2A."
+readme = "README.md"
+# The engine (prismal-ai) requires Python >=3.13, so the host does too.
+requires-python = ">=3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "Ernesto Crespo", email = "ecrespo@gmail.com" }]
+keywords = ["prismal", "agent", "fastapi", "a2a", "sse", "asgi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+]
+
+# The engine. PyPI distribution is `prismal-ai`; the import module is `prismal`.
+# Pinned per SPEC-RHB-NFR-004: the host couples only to the four engine seams.
+dependencies = [
+    "prismal-ai>=3.10.2,<4",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.urls]
+Homepage = "https://github.com/prismal-ai/prismal-server"
+Repository = "https://github.com/prismal-ai/prismal-server"
+Engine = "https://github.com/prismal-ai/prismal"
+SDK = "https://github.com/prismal-ai/prismal-sdk"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prismal_server"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/prismal_server", "README.md", "LICENSE"]
+
+# ── Tooling ────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["prismal_server"]
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+packages = ["prismal_server"]
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+# The engine ships its own types; if a released build lacks a py.typed marker,
+# don't fail the host's type check on it.
+module = ["prismal.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "contract: opt-in smoke tests against a released prismal engine (deselected by default)",
+]
+# Unit suite runs with no live provider I/O; the contract suite is opt-in.
+# Run unit only:      uv run pytest -m 'not contract'
+# Run contract suite: uv run pytest -m contract

@@ -1,0 +1,40 @@
+# Sample compose for a single prismal-server replica (RHB-05-04).
+#
+#   docker compose up --build
+#   curl localhost:8000/healthz
+#
+# The host is stateless; the engine's checkpointer + vector store persist under
+# /app/data, mounted here as a named volume so state survives restarts. Engine
+# settings (LLM provider keys, etc.) are read by the engine from the environment
+# — pass them through `.env` (see PRISMAL_SERVER_* for host-only knobs).
+
+services:
+  prismal-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: prismal-server:dev
+    ports:
+      - "8000:8000"
+    environment:
+      # Host-only settings (SPEC §7). Everything engine-side (provider keys,
+      # models) is read by the engine's own ConfigSourcePort from the same env.
+      PRISMAL_SERVER_HOST: "0.0.0.0"
+      PRISMAL_SERVER_PORT: "8000"
+      PRISMAL_SERVER_HOST_AUTH_BACKEND: "none"
+      PRISMAL_SERVER_A2A_ENABLED: "true"
+    # Uncomment to load provider keys / overrides from a local .env file:
+    # env_file:
+    #   - .env
+    volumes:
+      - prismal-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  prismal-data:
