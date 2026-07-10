@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prismal-server"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Reference host for the prismal agent engine — a thin FastAPI/ASGI process serving prismal over REST/SSE and inbound A2A."
 readme = "README.md"
 # The engine (prismal-ai) requires Python >=3.13, so the host does too.

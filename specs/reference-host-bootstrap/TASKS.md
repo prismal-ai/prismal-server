@@ -73,12 +73,12 @@ to `SPEC-RHB-*` IDs and the `M0…M5` milestones in `PLAN.md`.
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RHB-05-01 | Import-guard test: only the four engine entry points are imported from `prismal` (AST scan) | 0.3 d | all | NFR-001 | `TODO` |
-| RHB-05-02 | `contract/` suite (opt-in marker): boot a real `build_runtime()` + one chat turn + Agent Card fetch against the released engine | 0.5 d | 02-03, 03-01 | NFR-003 | `TODO` |
-| RHB-05-03 | `/openapi.json` sanity + a generated-client smoke (for `prismal-sdk`) | 0.3 d | 02-03 | SDK-004 | `TODO` |
-| RHB-05-04 | `Dockerfile` (uvicorn entrypoint) + compose sample; health/readiness wired | 0.4 d | 01-04 | — | `TODO` |
-| RHB-05-05 | `README.md` quickstart + `docs/` (run, auth, tenancy, A2A); link the SDK repo | 0.4 d | all | — | `TODO` |
-| RHB-05-06 | Tag `v0.1.0`; release workflow (PyPI optional; GHCR image) | 0.3 d | 05-04 | — | `TODO` |
+| RHB-05-01 | Import-guard test: only the four engine entry points are imported from `prismal` (AST scan) | 0.3 d | all | NFR-001 | `DONE` |
+| RHB-05-02 | `contract/` suite (opt-in marker): boot a real `build_runtime()` + one chat turn + Agent Card fetch against the released engine | 0.5 d | 02-03, 03-01 | NFR-003 | `DONE` |
+| RHB-05-03 | `/openapi.json` sanity + a generated-client smoke (for `prismal-sdk`) | 0.3 d | 02-03 | SDK-004 | `DONE` |
+| RHB-05-04 | `Dockerfile` (uvicorn entrypoint) + compose sample; health/readiness wired | 0.4 d | 01-04 | — | `DONE` |
+| RHB-05-05 | `README.md` quickstart + `docs/` (run, auth, tenancy, A2A); link the SDK repo | 0.4 d | all | — | `DONE` |
+| RHB-05-06 | Tag `v0.1.0`; release workflow (PyPI optional; GHCR image) | 0.3 d | 05-04 | — | `DONE` |
 
 ---
 

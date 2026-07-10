@@ -1,0 +1,35 @@
+# Keep the build context small and reproducible: ship only pyproject/src/docs
+# metadata the image needs; never leak local venvs, caches, or engine state.
+.git
+.github
+.idea
+.vscode
+
+# Python / tooling caches
+__pycache__/
+*.py[codz]
+.venv
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local secrets & engine runtime artifacts
+.env
+.envrc
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Tests aren't needed in the runtime image
+tests/
+
+# Container/compose files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
