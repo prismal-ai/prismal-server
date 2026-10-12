@@ -77,9 +77,27 @@ def resolve_org_id(request: Any, identity: AgentIdentity | None) -> str | None:
 
     Order: the identity's ``org_id`` if present, else the ``X-Org-Id`` header,
     else ``None`` (single-tenant).
+
+    WHERE per-tenant config is enabled (``host_tenant_config_dir``), tenants
+    carry their own gateway credentials, so the unauthenticated header is
+    honoured only in local development (``host_auth_backend="none"`` outside
+    ``production``); otherwise only an auth-resolved ``org_id`` selects a tenant.
     """
     if identity is not None and identity.org_id:
         org_id: str = identity.org_id
         return org_id
     header: str | None = request.headers.get("X-Org-Id")
+    settings = getattr(
+        getattr(getattr(request, "app", None), "state", None), "settings", None
+    )
+    if (
+        header is not None
+        and settings is not None
+        and settings.host_tenant_config_dir is not None
+        and (
+            settings.host_auth_backend != "none"
+            or settings.host_environment == "production"
+        )
+    ):
+        return None
     return header

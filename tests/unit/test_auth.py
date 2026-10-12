@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from httpx import ASGITransport, AsyncClient
+from prismal.identity import DID, AgentIdentity
 from pydantic import SecretStr
 
 from prismal_server.app import create_app
@@ -250,3 +251,55 @@ async def test_identity_org_id_threaded_into_graph_config() -> None:
             headers={"Authorization": "Bearer tok", "X-Org-Id": "acme"},
         )
     assert calls[0]["config"]["configurable"]["org_id"] == "acme"
+
+
+# ── Security review fix: tenant credentials need an authenticated org ─────
+
+
+def _app_request(headers: dict[str, str], **settings: Any) -> Any:
+    from prismal_server.config import HostSettings
+
+    app = SimpleNamespace(state=SimpleNamespace(settings=HostSettings(**settings)))
+    return SimpleNamespace(headers=headers, app=app)
+
+
+def test_header_tenant_ignored_when_tenant_config_and_real_auth(
+    tmp_path: Any,
+) -> None:
+    """A bearer/OIDC caller cannot pick another tenant's vault config by header."""
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="bearer",
+    )
+    assert resolve_org_id(req, None) is None
+    ident_no_org = AgentIdentity(did=DID("did:key:zNoOrg"), agent_name="x")
+    assert resolve_org_id(req, ident_no_org) is None
+
+
+def test_header_tenant_ignored_in_production_even_without_auth(tmp_path: Any) -> None:
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_environment="production",
+    )
+    assert resolve_org_id(req, None) is None
+
+
+def test_header_tenant_kept_for_dev_noauth_and_without_tenant_config(
+    tmp_path: Any,
+) -> None:
+    dev = _app_request({"X-Org-Id": "acme"}, host_tenant_config_dir=tmp_path)
+    assert resolve_org_id(dev, None) == "acme"
+    v01 = _app_request({"X-Org-Id": "acme"}, host_auth_backend="bearer")
+    assert resolve_org_id(v01, None) == "acme"  # v0.1 behaviour unchanged
+
+
+def test_identity_org_still_wins_with_tenant_config(tmp_path: Any) -> None:
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="oidc",
+    )
+    ident = AgentIdentity(did=DID("did:key:zB"), agent_name="b", org_id="beta")
+    assert resolve_org_id(req, ident) == "beta"

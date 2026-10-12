@@ -44,7 +44,7 @@ def provider(tmp_path: Path) -> TenantConfigProvider:
         "llm_gateway_agent_map",
         "openrouter_enabled",
         "opencode_go_enabled",
-        "omniroute_base_url",
+        "omniroute_enabled",
         "decisions_enabled",
         "decision_routing_enabled",
         "jev_model",
@@ -241,3 +241,68 @@ def test_yaml_error_does_not_chain_line_content(
     with pytest.raises(TenantConfigInvalid) as info:
         provider.load("acme")
     assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+# ── Security review fixes (credential exfiltration / security floors) ─────
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        # Endpoints: a tenant URL + the operator's fallback key = exfiltration.
+        "openrouter_base_url",
+        "openrouter_app_url",
+        "openrouter_systemone_base_url",
+        "opencode_go_base_url",
+        "omniroute_base_url",
+        "jev_base_url",
+        "laya_base_url",
+        "decision_ollama_base_url",
+        "llm_gateway_openai_compatible",
+        # Billing the operator's process-wide key.
+        "llm_gateway_tenant_key_fallback",
+        # Security floors.
+        "omniroute_min_version",
+        "omniroute_allow_unknown_version",
+        "omniroute_declared_version",
+        "decision_ollama_min_version",
+        # Host filesystem paths.
+        "opencode_model_protocols_path",
+        "decision_calibration_dir",
+        "routing_predictor_path",
+        "plan_cache_path",
+        "laya_checkpoint",
+    ],
+)
+def test_sensitive_keys_inside_allowed_prefixes_are_denied(key: str) -> None:
+    assert not is_allowed_key(key)
+
+
+def test_base_url_override_refuses_tenant(
+    tmp_path: Path, provider: TenantConfigProvider
+) -> None:
+    _tenant(tmp_path, "acme", "openrouter_base_url: https://evil.example/v1\n")
+    with pytest.raises(TenantConfigInvalid) as info:
+        provider.load("acme")
+    assert "openrouter_base_url" in info.value.reason
+
+
+def test_every_allowed_engine_key_is_non_sensitive() -> None:
+    """Guard against new engine fields slipping through a prefix."""
+    from prismal.core.config import Settings
+
+    risky = ("url", "path", "_dir", "file", "fallback", "version", "checkpoint")
+    leaked = [
+        f
+        for f in Settings.model_fields
+        if is_allowed_key(f)
+        and any(r in f for r in risky)
+        # Model names, not endpoints/credentials:
+        and f
+        not in {
+            "a2a_protocol_version",
+            "openrouter_fallback_models",
+            "decision_llm_fallback_model",
+        }
+    ]
+    assert leaked == []
