@@ -158,7 +158,7 @@ class _NullBackend:
 
 
 def _fake_registry() -> RuntimeRegistry:
-    async def builder(*, org_id: str | None) -> Any:
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
         return type("RT", (), {"tool_provider": object(), "org_id": org_id})()
 
     return RuntimeRegistry(HostSettings(), builder=builder)

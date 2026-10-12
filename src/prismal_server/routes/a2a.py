@@ -19,8 +19,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from prismal_server.auth import resolve_org_id
+from prismal_server.deps import release_after
 
 router = APIRouter(tags=["a2a"])
 
@@ -73,9 +75,10 @@ async def a2a_rpc(request: Request) -> Any:
     org_id = resolve_org_id(request, identity)
     payload = await request.json()
 
-    runtime = await request.app.state.registry.get(org_id)
-    handler = getattr(runtime, "a2a_handler", None)
+    lease = await request.app.state.registry.acquire(org_id)
+    handler = getattr(lease.runtime, "a2a_handler", None)
     if handler is None:
+        await lease.release()
         return JSONResponse(
             {
                 "jsonrpc": "2.0",
@@ -90,10 +93,15 @@ async def a2a_rpc(request: Request) -> Any:
     auth_ctx = _to_auth_ctx(identity)
 
     if payload.get("method") == "message/stream":
+        # The lease spans the stream (SPEC-RH2-TEN-004).
         return StreamingResponse(
-            handler.stream_rpc(payload, auth_ctx=auth_ctx),
+            release_after(lease, handler.stream_rpc(payload, auth_ctx=auth_ctx)),
             media_type="text/event-stream",
+            background=BackgroundTask(lease.release),
         )
 
-    result = await handler.handle_rpc(payload, auth_ctx=auth_ctx)
+    try:
+        result = await handler.handle_rpc(payload, auth_ctx=auth_ctx)
+    finally:
+        await lease.release()
     return JSONResponse(result)

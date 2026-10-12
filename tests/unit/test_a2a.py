@@ -44,7 +44,7 @@ class FakeHandler:
 
 
 def _registry_with_handler(handler: Any) -> RuntimeRegistry:
-    async def builder(*, org_id: str | None) -> Any:
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
         return type("RT", (), {"a2a_handler": handler, "tool_provider": object()})()
 
     return RuntimeRegistry(HostSettings(), builder=builder)

@@ -18,8 +18,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from prismal_server.auth import authenticate, resolve_org_id
+from prismal_server.deps import release_after
 from prismal_server.streaming import sse_stream
 
 router = APIRouter(tags=["threads"])
@@ -48,17 +50,27 @@ async def post_message(
     identity = await authenticate(request)
     org_id = resolve_org_id(request, identity)
 
-    registry = request.app.state.registry
-    runtime = await registry.get(org_id)
-    graph_factory = request.app.state.graph_factory
-    graph = await graph_factory(tool_provider=getattr(runtime, "tool_provider", None))
-
-    config = {"configurable": {"thread_id": thread_id, "org_id": org_id}}
-    graph_input = {"messages": [{"role": body.role, "content": body.content}]}
-    chunks = graph.astream(graph_input, config, stream_mode="messages")
+    # The turn leases its runtime so a tenant-config reload or LRU eviction
+    # closes it only after the stream ends (SPEC-RH2-TEN-004).
+    lease = await request.app.state.registry.acquire(org_id)
+    try:
+        graph_factory = request.app.state.graph_factory
+        graph = await graph_factory(
+            tool_provider=getattr(lease.runtime, "tool_provider", None)
+        )
+        config = {"configurable": {"thread_id": thread_id, "org_id": org_id}}
+        graph_input = {"messages": [{"role": body.role, "content": body.content}]}
+        chunks = graph.astream(graph_input, config, stream_mode="messages")
+    except BaseException:
+        await lease.release()
+        raise
 
     heartbeat_s = request.app.state.settings.sse_heartbeat_s
     return StreamingResponse(
-        sse_stream(chunks, thread_id=thread_id, heartbeat_s=heartbeat_s),
+        release_after(
+            lease, sse_stream(chunks, thread_id=thread_id, heartbeat_s=heartbeat_s)
+        ),
         media_type="text/event-stream",
+        # Idempotent backstop if the body is never iterated.
+        background=BackgroundTask(lease.release),
     )

@@ -33,11 +33,25 @@ Phase 0 outcome: all HRS surfaces present ⇒ no RH2 task `BLOCKED`. Record: [`V
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-01-01 | `config.py`: SPEC §10 settings, validation | 0.3 d | 00-01 | — | `TODO` |
-| RH2-01-02 | `tenancy/secrets.py`: `TenantSecretsPort`, file + env backends, `SecretStr` | 0.5 d | 01-01 | TEN-003 | `TODO` |
-| RH2-01-03 | `tenancy/config_source.py`: `TenantConfigSource` + prefix allowlist | 0.6 d | 01-02 | TEN-001/002 | `TODO` |
-| RH2-01-04 | Registry passes `config_source`; mtime-based rebuild after in-flight turns | 0.5 d | 01-03 | TEN-001/004 | `TODO` |
-| RH2-01-05 | Tests: two tenants, different gateways; forbidden key; secret canary redaction | 0.4 d | 01-04 | TEN-* | `TODO` |
+| RH2-01-01 | `config.py`: SPEC §10 settings, validation | 0.3 d | 00-01 | — | `DONE` |
+| RH2-01-02 | `tenancy/secrets.py`: `TenantSecretsPort`, file + env backends, `SecretStr` | 0.5 d | 01-01 | TEN-003 | `DONE` |
+| RH2-01-03 | `tenancy/config_source.py`: `TenantConfigSource` + prefix allowlist | 0.6 d | 01-02 | TEN-001/002 | `DONE` |
+| RH2-01-04 | Registry passes `config_source`; mtime-based rebuild after in-flight turns | 0.5 d | 01-03 | TEN-001/004 | `DONE` |
+| RH2-01-05 | Tests: two tenants, different gateways; forbidden key; secret canary redaction | 0.4 d | 01-04 | TEN-* | `DONE` |
+
+Phase 1 decisions (2026-10-12):
+- `tenant.yaml` = flat map of engine `Settings` field names → scalars (lists/maps JSON-encoded);
+  emitted to the engine as `PRISMAL_<KEY>`. Missing file ⇒ tenant uses process config.
+- Validation is **eager**, before `build_runtime`: the engine's `ChainedConfigSource` swallows a
+  failing sub-source, which would silently fall back to process settings (not fail-closed).
+- Secret keys (`*_api_key`, `*_token`) are refused inline in `tenant.yaml`; they come only from the
+  secrets backend and must also match the prefix allowlist. Empty secret ⇒ refused.
+- File backend: `<host_secrets_dir>/<org_id>/<key>`, or `<host_tenant_config_dir>/<org_id>/secrets/<key>`
+  when `host_secrets_dir` is unset. Env backend: `PRISMAL_SERVER_SECRET__<ORG>__<KEY>` (read-only).
+- `org_id` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (path-traversal guard).
+- Reload: mtime fingerprint (tenant.yaml + secret files) checked on each registry lookup; turns
+  hold a `Lease`, so a stale or LRU-evicted runtime closes after its last in-flight turn.
+- Counter `tenant_config_reloads_total` is logged only for now (no host metrics backend yet) — RH2-07.
 
 ## Phase 2 — Usage & budget
 
@@ -144,3 +158,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 |---|---|---|---|
 | 1.0 | 2026-10-04 | Ernesto Crespo | Initial task breakdown for host v0.2 |
 | 1.1 | 2026-10-12 | Ernesto Crespo | Phase 0 `DONE` (engine 3.19.0 verified; see VERIFY-RH2-00.md) |
+| 1.2 | 2026-10-12 | Ernesto Crespo | Phase 1 `DONE` (tenant config & gateways) |
