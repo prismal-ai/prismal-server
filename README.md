@@ -2,7 +2,7 @@
 
 Reference **host** for the [`prismal`](https://github.com/prismal-ai/prismal)
 agent engine — a thin FastAPI/ASGI process that exposes prismal over
-**REST · SSE** (WebSocket to follow) plus the inbound **A2A** endpoints, so
+**REST · SSE · WebSocket** (opt-in, `host_ws_enabled`) plus the inbound **A2A** endpoints, so
 non-Python clients and the front-end ecosystem can build against it.
 
 `prismal` is a pure library (no web server by design). `prismal-server` is the

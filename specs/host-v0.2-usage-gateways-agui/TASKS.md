@@ -159,10 +159,30 @@ Phase 4 decisions (2026-10-12):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-05-01 | `routes/ws.py`: handshake auth, `Origin` check, tenant | 0.5 d | 01-04 | WSK-001 | `TODO` |
-| RH2-05-02 | Frame protocol, one turn at a time, cancel, close codes | 0.7 d | 05-01, 03-02 | WSK-002/003 | `TODO` |
-| RH2-05-03 | Heartbeat, frame-size limit, send backpressure | 0.3 d | 05-02 | WSK-003 | `TODO` |
-| RH2-05-04 | Tests (native + AG-UI over WS, 4409/4400/1009/1008) | 0.4 d | 05-03 | WSK-* | `TODO` |
+| RH2-05-01 | `routes/ws.py`: handshake auth, `Origin` check, tenant | 0.5 d | 01-04 | WSK-001 | `DONE` |
+| RH2-05-02 | Frame protocol, one turn at a time, cancel, close codes | 0.7 d | 05-01, 03-02 | WSK-002/003 | `DONE` |
+| RH2-05-03 | Heartbeat, frame-size limit, send backpressure | 0.3 d | 05-02 | WSK-003 | `DONE` |
+| RH2-05-04 | Tests (native + AG-UI over WS, 4409/4400/1009/1008) | 0.4 d | 05-03 | WSK-* | `DONE` |
+
+Phase 5 decisions (2026-10-12):
+- `GET /ws/threads/{id}` is mounted only WHERE `host_ws_enabled` (absent route otherwise). Handshake
+  refusals close `1008` before accept: `Origin` sent and not in `cors_origins` (`"*"` allows any;
+  no `Origin` = non-browser client, allowed); strict mode without credential; tenant resolved
+  fail-closed (`for_read=True`), so `X-Org-Id` never selects another tenant on WebSocket.
+- Turns reuse `routes/threads.open_turn` (org-scoped engine thread key, runtime lease, AG-UI gate,
+  usage record) and the transport-free generators `streaming.native_events` / `agui_events`, which
+  SSE now frames too — WS `data` is byte-for-byte the SSE payload (DD-RH2-007).
+- A turn that cannot start or fails (`budget_exceeded`, `protocol_not_enabled`,
+  `invalid_thread_id`, …) is an `error` frame with the SSE error body; the connection stays open
+  (WebSocket has no status code for 402/406/422).
+- Busy is cleared when the terminal frame (`done`/`error`, `RUN_FINISHED`/`RUN_ERROR`) is sent, so
+  a client replying to `done` immediately is not `4409`. `cancel` with no turn is ignored.
+- Concurrency is anyio-structured (task group + per-turn cancel scope, shielded cleanup): a
+  disconnect, close or server shutdown cancels the turn, closes the graph stream and releases the
+  lease. Backpressure: sends are awaited under one lock and the turn's `ChunkPump` is bounded (64).
+- Server heartbeat is connection-level (`{"event":"heartbeat"}` every `sse_heartbeat_s`);
+  per-turn idle markers are dropped. Metric `ws_sessions_total{close_code}` (in-process).
+- Browser tickets stay out of scope (header-only auth in 0.2, ARCHITECTURE §8.2).
 
 ## Phase 6 — Fake-LLM mode & admin
 
@@ -236,3 +256,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.3 | 2026-10-12 | Ernesto Crespo | Phase 2 `DONE` (usage & budget) |
 | 1.4 | 2026-10-12 | Ernesto Crespo | Phase 3 `DONE` (AG-UI) |
 | 1.5 | 2026-10-12 | Ernesto Crespo | Phase 4 `DONE` (A2A v1.0 dual stack) |
+| 1.6 | 2026-10-12 | Ernesto Crespo | Phase 5 `DONE` (WebSocket) |
