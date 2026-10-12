@@ -25,11 +25,22 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any
 
+from prismal.events.agui import (
+    AgUiContext,
+    error_run,
+    finish_run,
+    start_run,
+    to_agui_events,
+)
+
 from prismal_server import metrics
 from prismal_server.errors import map_exception
 from prismal_server.usage.models import UsageWire
 
 logger = logging.getLogger(__name__)
+
+# Response header naming the stream protocol in AG-UI mode (SPEC-RH2-AGU-002).
+STREAM_PROTOCOL_HEADER = "X-Prismal-Stream-Protocol"
 
 # A translated SSE event: (event name, JSON-serializable payload).
 SSEEvent = tuple[str, dict[str, Any]]
@@ -191,5 +202,92 @@ async def sse_stream(
                 "usage": usage.model_dump() if usage else None,
             },
         )
+    finally:
+        await pump.aclose()
+
+
+def agui_frame(event: Any) -> str:
+    """One AG-UI event as a data-only SSE frame (no ``event:`` line, AGU-002)."""
+    return f"data: {json.dumps(event.to_wire(), separators=(',', ':'))}\n\n"
+
+
+SummaryProvider = Callable[[], Any]
+
+
+def _usage_of(summary: Any) -> UsageWire | None:
+    if summary is None:
+        return None
+    try:
+        return UsageWire.model_validate(summary.to_usage_wire())
+    except Exception:
+        logger.warning("engine usage wire rejected", exc_info=True)
+        return None
+
+
+def _safe_summary(summary_for: SummaryProvider) -> Any:
+    try:
+        return summary_for()
+    except Exception:  # telemetry is fail-open (DD-RH2-002)
+        logger.warning("run summary lookup failed", exc_info=True)
+        return None
+
+
+async def agui_stream(
+    chunks: AsyncIterator[Any] | ChunkPump,
+    *,
+    ctx: AgUiContext,
+    heartbeat_s: float = 15.0,
+    initial_state: Any = None,
+    run_input: Any = None,
+    result: Any = None,
+    summary_for: SummaryProvider,
+    on_done: DoneHook | None = None,
+) -> AsyncIterator[str]:
+    """Bridge ``astream(stream_mode=["messages","updates","custom"])`` to AG-UI.
+
+    Every AG-UI event comes from the engine (``start_run`` / ``to_agui_events``
+    / ``finish_run`` / ``error_run``, SPEC-RH2-AGU-001); the host only frames
+    them, interleaves heartbeat comments and records usage. A mid-stream
+    failure is ``error_run`` with the same ``code``/``message`` as the native
+    ``error`` event (AGU-004); usage arrives as ``CUSTOM prismal.usage`` before
+    ``RUN_FINISHED``, produced by ``finish_run(summary=…)``.
+    """
+    pump = chunks if isinstance(chunks, ChunkPump) else ChunkPump(chunks)
+    metrics.increment("agui_streams_total")
+    try:
+        for event in start_run(ctx, initial_state=initial_state, input=run_input):
+            yield agui_frame(event)
+        while True:
+            try:
+                kind, value = await pump.get(wait_s=heartbeat_s)
+            except TimeoutError:
+                yield sse_comment("heartbeat")
+                continue
+
+            if kind == "chunk":
+                for event in to_agui_events(value, ctx):
+                    yield agui_frame(event)
+            elif kind == "error":
+                mapped = map_exception(value)
+                summary = _safe_summary(summary_for)
+                for event in error_run(
+                    ctx, code=mapped.code, message=mapped.message, summary=summary
+                ):
+                    yield agui_frame(event)
+                return
+            else:  # "end"
+                break
+
+        summary = _safe_summary(summary_for)
+        usage = _usage_of(summary)
+        if usage is None:
+            metrics.increment("usage_missing_total")
+        if on_done is not None:
+            try:
+                await on_done("stop", usage)
+            except Exception:  # persistence must not break the stream
+                logger.warning("usage record failed (ag-ui)", exc_info=True)
+        for event in finish_run(ctx, summary=summary, result=result):
+            yield agui_frame(event)
     finally:
         await pump.aclose()

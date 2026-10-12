@@ -26,7 +26,7 @@ from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
-from prismal_server.routes import a2a, health, threads, usage
+from prismal_server.routes import a2a, agui, health, threads, usage
 from prismal_server.usage.store import UsageStore, build_usage_store
 from prismal_server.usage.summary import RunSummaryLookup, default_run_summary
 
@@ -109,6 +109,7 @@ def create_app(
     app.include_router(threads.router)
     app.include_router(a2a.router)
     app.include_router(usage.router)
+    app.include_router(agui.router)
     return app
 
 

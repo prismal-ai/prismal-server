@@ -41,6 +41,8 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "InvalidWindow": (400, "invalid_window"),  # routes/usage.py
     "InvalidCursor": (400, "invalid_cursor"),  # routes/usage.py
     "InvalidThreadId": (422, "invalid_thread_id"),  # routes/threads.py
+    "ProtocolNotEnabled": (406, "protocol_not_enabled"),  # routes/threads.py
+    "InvalidAgUiInput": (422, "invalid_input"),  # routes/agui.py
 }
 
 
