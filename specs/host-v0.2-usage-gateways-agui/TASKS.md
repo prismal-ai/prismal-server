@@ -70,11 +70,27 @@ Phase 1 decisions (2026-10-12):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-02-01 | `usage/models.py` (12-key `UsageWire`, reports, `QuotaWindow`) + fixture contract test | 0.3 d | 00-05 | USG-002 | `TODO` |
-| RH2-02-02 | `done.usage` from `get_run_summary(...).to_usage_wire()`; `null` fail-open + counter | 0.4 d | 02-01 | USG-001 | `TODO` |
-| RH2-02-03 | `usage/store.py`: memory + SQLite stores, retention, append on `done` | 0.7 d | 02-02 | USE-001 | `TODO` |
-| RH2-02-04 | `GET /v1/usage`: window, filter, whole-window totals/by_model, cursor paging | 0.6 d | 02-03 | USE-002/003 | `TODO` |
-| RH2-02-05 | `GET /v1/budget`: limits, engine status or `unknown`, quota windows (fail-open) | 0.6 d | 00-03 | BUD-001/002 | `TODO` |
+| RH2-02-01 | `usage/models.py` (12-key `UsageWire`, reports, `QuotaWindow`) + fixture contract test | 0.3 d | 00-05 | USG-002 | `DONE` |
+| RH2-02-02 | `done.usage` from `get_run_summary(...).to_usage_wire()`; `null` fail-open + counter | 0.4 d | 02-01 | USG-001 | `DONE` |
+| RH2-02-03 | `usage/store.py`: memory + SQLite stores, retention, append on `done` | 0.7 d | 02-02 | USE-001 | `DONE` |
+| RH2-02-04 | `GET /v1/usage`: window, filter, whole-window totals/by_model, cursor paging | 0.6 d | 02-03 | USE-002/003 | `DONE` |
+| RH2-02-05 | `GET /v1/budget`: limits, engine status or `unknown`, quota windows (fail-open) | 0.6 d | 00-03 | BUD-001/002 | `DONE` |
+
+Phase 2 decisions (2026-10-12):
+- `budget_exceeded` HTTP status **429 → 402** (MODIFIES the v0.1 mapping, per §11); the body keeps
+  `message` and adds `scope`/`limit`/`consumed`. The route primes the first stream item (bounded by
+  `sse_heartbeat_s`) so a budget refusal before the first token is a 402, not a stream; other
+  first-item errors still stream as `error` (v0.1 CHT-006).
+- `get_run_summary` returns the session's *last* turn: the host snapshots its `run_id` before the
+  turn and reports usage only for a new run, so a turn without LLM calls never re-reports the
+  previous turn (prevents double counting).
+- Only `done` persists a record (USE-001); a mid-stream `budget_exceeded` carries the partial usage
+  in the `error` event but is not persisted. A2A turns are not recorded in 0.2.
+- `/v1/usage` turns are newest first with an opaque keyset cursor; a malformed cursor is
+  `400 invalid_cursor` (new code). Unparsable / offset-less / inverted / > 31 d windows are
+  `400 invalid_window`.
+- Counters live in `prismal_server.metrics` (in-process); export is RH2-07.
+- New dependency `aiosqlite` (SQLite store).
 
 ## Phase 3 — AG-UI
 
@@ -172,3 +188,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.0 | 2026-10-04 | Ernesto Crespo | Initial task breakdown for host v0.2 |
 | 1.1 | 2026-10-12 | Ernesto Crespo | Phase 0 `DONE` (engine 3.19.0 verified; see VERIFY-RH2-00.md) |
 | 1.2 | 2026-10-12 | Ernesto Crespo | Phase 1 `DONE` (tenant config & gateways) |
+| 1.3 | 2026-10-12 | Ernesto Crespo | Phase 2 `DONE` (usage & budget) |
