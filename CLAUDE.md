@@ -31,8 +31,11 @@ RAG, tool, memory, security, or policy logic here is a bug:
 
 ## Review checklist (enforce on every PR)
 
-- [ ] No import from `prismal` other than the four seams above (there is an
-      AST import-guard test — keep it green).
+- [ ] No import from `prismal` other than the four seams above plus the v0.2
+      host read surface (`prismal.events.agui` AG-UI translator names,
+      `prismal.monitoring.get_run_summary`; HRS §3 — see
+      `specs/host-v0.2-usage-gateways-agui/VERIFY-RH2-00.md`). Every other engine
+      read is a `RuntimeContext` method. The AST import-guard test enforces it.
 - [ ] No prompt built from user input host-side (there are none; the engine owns
       prompting). Never f-string request content into anything engine-bound
       except as graph input.
@@ -42,7 +45,7 @@ RAG, tool, memory, security, or policy logic here is a bug:
 - [ ] New behaviour is **test-first** (TDD): failing test → minimal code → green.
 - [ ] Unit tests use `build_test_runtime` fakes (no live provider I/O); engine
       integration goes in the opt-in `contract` suite.
-- [ ] The engine dep stays pinned `prismal>=3.10,<4`.
+- [ ] The engine dep stays pinned `prismal-ai>=3.17,<4`.
 
 ## Common commands (once scaffolded — see TASKS RHB-00-01)
 
