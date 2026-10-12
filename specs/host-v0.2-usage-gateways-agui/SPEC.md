@@ -36,6 +36,7 @@ fail the `test_import_guard` CI job.
 | SPEC-RH2-TEN-002 | Only keys with allowed prefixes MUST load (`llm_gateway_`, `openrouter_`, `opencode_`, `omniroute_`, `decision`, `jev_`, `laya_`, `adaptive_routing_`, `routing_`, `plan_cache_`, `budget_`, `agui_`, `a2a_protocol_version`); any other key MUST fail that tenant's load with `tenant_config_invalid` (fail-closed). | `MUST` |
 | SPEC-RH2-TEN-003 | Secrets (`*_api_key`, `*_token`) MUST be `SecretStr`, resolved from `TenantSecretsPort` (`file` or `env` backend), never written to `os.environ`, logs, error bodies or OpenAPI examples. | `MUST` |
 | SPEC-RH2-TEN-004 | WHEN a tenant's `tenant.yaml` or secret file mtime changes, THE SYSTEM SHALL close that tenant's `RuntimeContext` after in-flight turns finish and rebuild it on next use. | `SHOULD` |
+| SPEC-RH2-TEN-005 | Trust model: `tenant.yaml` and tenant secrets are **operator-authored** (host vault owned by the operator; tenants never edit them). Budget limits, gateway quotas and decision/routing modes set there are operator policy per tenant. The key set is an exact allowlist (defense in depth, see `tenancy/config_source.py::ALLOWED_KEYS`) that never admits endpoints/URLs, operator-key fallback, host paths, process resource sizing or security/privacy/compliance floors. Tenant self-service config is out of scope for 0.2. | `MUST` |
 
 ## 3. Usage in the `done` event (MODIFIES SPEC-RHB-CHT-002)
 
@@ -235,3 +236,4 @@ raised mid-stream, THE SYSTEM SHALL emit a terminal `error` event with the same 
 |---|---|---|---|
 | 1.0 | 2026-10-04 | Ernesto Crespo | Initial technical spec for host v0.2 |
 | 1.1 | 2026-10-12 | Ernesto Crespo | [verify] items closed by VERIFY-RH2-00.md (`ListTasks`, `A2A-Version`, AG-UI encoding) |
+| 1.2 | 2026-10-12 | Ernesto Crespo | TEN-005 trust model (operator-authored tenant config); exact key allowlist; `forbidden_tenant` on tenant-selection mismatch |

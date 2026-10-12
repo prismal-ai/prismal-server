@@ -134,6 +134,9 @@ AG-UI bridges (incl. `to_agui_events`) are exercised.
 ## 7. Security
 
 - Tenant secrets: `SecretStr`, never mirrored to `os.environ`; secret files must be mode `0600` (warn otherwise).
+- Tenant config trust model (SPEC-RH2-TEN-005): `tenant.yaml` and secrets are operator-authored;
+  per-tenant budgets/quotas/modes are operator policy. Exact key allowlist as defense in depth;
+  tenant selection fails closed (`403 forbidden_tenant`) when tenant config is enabled.
 - Usage/budget/admin queries always filtered by the auth-resolved `org_id`.
 - AG-UI `STATE_*` content is produced by the engine's allowlisted state view; host adds nothing.
 - WS: auth only at handshake; `Origin` checked against `cors_origins`; frame size limit.

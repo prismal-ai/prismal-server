@@ -61,6 +61,10 @@ Phase 1 decisions (2026-10-12):
   identity `org_id` ⇒ `403 forbidden_tenant`; header without identity org ⇒ honoured only in dev
   no-auth outside `production`, else `403` (never a silent fallback to the process tenant). Env
   secrets backend accepts only `^[a-z0-9]+(-[a-z0-9]+)*$` org ids (injective mapping).
+- Trust model (SPEC-RH2-TEN-005, decided 2026-10-12): tenant config is **operator-authored**. A third
+  security review flagged that `budget_*`, `decision_modes` and `opencode_go_monthly_cap_usd` let
+  "a tenant" relax cost governance; under this model they are operator per-tenant policy and are
+  accepted by design. Self-service tenant config would need a tighten-only layer (future work).
 
 ## Phase 2 — Usage & budget
 
