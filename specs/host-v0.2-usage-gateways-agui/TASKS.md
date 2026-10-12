@@ -104,10 +104,24 @@ Phase 2 decisions (2026-10-12):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-03-01 | Negotiation (Accept profile / `?protocol=`) and `406 protocol_not_enabled` | 0.3 d | 00-02 | AGU-001/003 | `TODO` |
-| RH2-03-02 | `streaming.agui_bridge`: start/translate/finish/error, data-only frames, heartbeat, cancel | 0.7 d | 03-01 | AGU-002/004 | `TODO` |
-| RH2-03-03 | `POST /v1/agui` `RunAgentInput` adapter | 0.4 d | 03-02 | AGU-005 | `TODO` |
-| RH2-03-04 | Tests: engine golden events framed; `RUN_ERROR`; usage before `RUN_FINISHED`; disconnect | 0.4 d | 03-02 | AGU-* | `TODO` |
+| RH2-03-01 | Negotiation (Accept profile / `?protocol=`) and `406 protocol_not_enabled` | 0.3 d | 00-02 | AGU-001/003 | `DONE` |
+| RH2-03-02 | `streaming.agui_bridge`: start/translate/finish/error, data-only frames, heartbeat, cancel | 0.7 d | 03-01 | AGU-002/004 | `DONE` |
+| RH2-03-03 | `POST /v1/agui` `RunAgentInput` adapter | 0.4 d | 03-02 | AGU-005 | `DONE` |
+| RH2-03-04 | Tests: engine golden events framed; `RUN_ERROR`; usage before `RUN_FINISHED`; disconnect | 0.4 d | 03-02 | AGU-* | `DONE` |
+
+Phase 3 decisions (2026-10-12):
+- Engine golden AG-UI streams (12) vendored to `tests/fixtures/protocols/agui/`; the host bridge
+  reproduces each one event-for-event. Frames are `data: <event.to_wire() JSON>` — the engine's
+  `to_sse` helper is not in the HRS allowlist, so the host frames via the event's own method.
+- Engine AG-UI flags come from the tenant runtime's `settings` (process engine settings via the
+  `prismal.a2a.get_settings` seam re-export when unset). `?protocol=` beats `Accept` profile;
+  an unknown `?protocol=` is `422`.
+- AG-UI turns share the native turn path: org-scoped engine thread key, 402 before the first
+  token, usage persisted on success. `RUN_STARTED.threadId` is the client thread id;
+  `RUN_STARTED.input` is not echoed; `finish_run(result=None)` (the host has no final result).
+- `POST /v1/agui`: only the last `user` message's text is the turn input (history lives in the
+  engine checkpoint, it is not replayed); text parts of `InputContent[]` are joined; no user
+  text ⇒ `422 invalid_input` (new code); client `tools` ignored and logged.
 
 ## Phase 4 — A2A v1.0
 
@@ -197,3 +211,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.1 | 2026-10-12 | Ernesto Crespo | Phase 0 `DONE` (engine 3.19.0 verified; see VERIFY-RH2-00.md) |
 | 1.2 | 2026-10-12 | Ernesto Crespo | Phase 1 `DONE` (tenant config & gateways) |
 | 1.3 | 2026-10-12 | Ernesto Crespo | Phase 2 `DONE` (usage & budget) |
+| 1.4 | 2026-10-12 | Ernesto Crespo | Phase 3 `DONE` (AG-UI) |

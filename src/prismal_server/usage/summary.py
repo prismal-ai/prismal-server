@@ -46,9 +46,16 @@ class TurnUsageProbe:
         summary = self._summary()
         return None if summary is None else str(getattr(summary, "run_id", ""))
 
-    def usage(self) -> UsageWire | None:
+    def summary(self) -> Any:
+        """The engine ``RunSummary`` of *this* turn, or ``None`` (stale or absent)."""
         summary = self._summary()
         if summary is None or str(getattr(summary, "run_id", "")) == self._before:
+            return None
+        return summary
+
+    def usage(self) -> UsageWire | None:
+        summary = self.summary()
+        if summary is None:
             return None
         try:
             return UsageWire.model_validate(summary.to_usage_wire())
