@@ -170,3 +170,55 @@ async def test_other_first_chunk_errors_still_stream_as_error_event() -> None:
         resp = await c.post("/threads/t-1/messages", json={"content": "x"})
     assert resp.status_code == 200
     assert "event: error" in resp.text and "internal_error" in resp.text
+
+
+# ── Security review: thread ids are per-tenant on the engine side ─────────
+
+
+def test_engine_thread_key_is_injective_per_org() -> None:
+    from prismal_server.routes.threads import engine_thread_id
+
+    assert engine_thread_id(None, "t-1") == "t-1"  # single-tenant unchanged
+    keys = {
+        engine_thread_id("acme", "t-1"),
+        engine_thread_id("beta", "t-1"),
+        engine_thread_id("a:b", "c"),
+        engine_thread_id("a", "b:c"),
+    }
+    assert len(keys) == 4
+
+
+async def test_same_thread_id_in_two_orgs_does_not_share_usage() -> None:
+    """beta reusing acme's thread id must not get (or be billed) acme's usage."""
+    summaries: dict[str, Summary] = {}
+    seen_engine_threads: list[str] = []
+
+    def astream(engine_thread: str) -> AsyncIterator[Any]:
+        seen_engine_threads.append(engine_thread)
+
+        async def gen() -> AsyncIterator[Any]:
+            if engine_thread.endswith("acme:t-1"):
+                summaries[engine_thread] = Summary(f"{engine_thread}.turn1", WIRE_DICT)
+            yield (Msg("hi"), {})
+
+        return gen()
+
+    app, store = _app(astream, summaries)
+    async with _client(app) as c:
+        acme = await c.post(
+            "/threads/t-1/messages", json={"content": "x"}, headers={"X-Org-Id": "acme"}
+        )
+        beta = await c.post(
+            "/threads/t-1/messages", json={"content": "x"}, headers={"X-Org-Id": "beta"}
+        )
+    assert '"usage": {"prompt_tokens": 10' in acme.text
+    assert '"thread_id": "t-1"' in beta.text  # client-facing id unchanged
+    assert '"usage": null' in beta.text
+    assert len(set(seen_engine_threads)) == 2
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    beta_rows = await store.query(
+        org_id="beta", thread_id=None, since=now - timedelta(minutes=1), until=now
+    )
+    assert beta_rows == []

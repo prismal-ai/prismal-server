@@ -32,6 +32,18 @@ from prismal_server.usage.summary import TurnUsageProbe
 router = APIRouter(tags=["threads"])
 
 
+def engine_thread_id(org_id: str | None, thread_id: str) -> str:
+    """The engine-side thread key: the client ``thread_id`` scoped to its org.
+
+    The engine keys conversation state and run summaries by thread id alone,
+    process-wide, and clients choose their own ids — so two tenants using the
+    same id would share history and usage. The length prefix makes the mapping
+    injective (``("a:b", "c")`` ≠ ``("a", "b:c")``). Single-tenant (``None``)
+    keeps the raw id. Clients only ever see their own ``thread_id``.
+    """
+    return thread_id if org_id is None else f"{len(org_id)}:{org_id}:{thread_id}"
+
+
 class MessageIn(BaseModel):
     """A chat turn's request body (SPEC.md §3.2)."""
 
@@ -57,7 +69,8 @@ async def post_message(
 
     settings = request.app.state.settings
     store = request.app.state.usage_store
-    probe = TurnUsageProbe(thread_id, request.app.state.run_summary)
+    engine_thread = engine_thread_id(org_id, thread_id)
+    probe = TurnUsageProbe(engine_thread, request.app.state.run_summary)
 
     async def record_usage(finish_reason: str, usage: UsageWire | None) -> None:
         # SPEC-RH2-USE-001: one record per `done` with non-null usage.
@@ -83,7 +96,7 @@ async def post_message(
         graph = await graph_factory(
             tool_provider=getattr(lease.runtime, "tool_provider", None)
         )
-        config = {"configurable": {"thread_id": thread_id, "org_id": org_id}}
+        config = {"configurable": {"thread_id": engine_thread, "org_id": org_id}}
         graph_input = {"messages": [{"role": body.role, "content": body.content}]}
         pump = ChunkPump(graph.astream(graph_input, config, stream_mode="messages"))
         # Peek the first item: a budget refusal before the first token is an

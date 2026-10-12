@@ -91,6 +91,13 @@ Phase 2 decisions (2026-10-12):
   `400 invalid_window`.
 - Counters live in `prismal_server.metrics` (in-process); export is RH2-07.
 - New dependency `aiosqlite` (SQLite store).
+- Security review fixes (post-merge): (1) the engine keys conversation state and run summaries
+  by thread id alone, process-wide, so the host now sends an **org-scoped engine thread key**
+  `f"{len(org)}:{org}:{thread_id}"` (raw id when single-tenant); clients still see their own
+  `thread_id`. MODIFIES the engine-side mapping of SPEC-RHB-THR-001. **Upgrade note (CHANGELOG,
+  RH2-07):** multi-tenant 0.1 deployments lose continuity of threads started before the upgrade.
+  (2) usage/budget (and later admin) reads resolve the org fail-closed (`for_read=True`): a header
+  can never select another org's records; mismatch ⇒ `403 forbidden_tenant`.
 
 ## Phase 3 — AG-UI
 

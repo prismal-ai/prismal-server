@@ -192,3 +192,45 @@ async def test_invalid_cursor_is_400(client: AsyncClient) -> None:
 async def test_limit_bounds(client: AsyncClient, limit: int) -> None:
     resp = await _get(client, "acme", limit=limit)
     assert resp.status_code == 422
+
+
+# ── Security review: reads are scoped to the authenticated org ────────────
+
+
+async def _bearer_app(**settings: Any) -> Any:
+    store = MemoryUsageStore(retention_days=90)
+    await _seed(store)
+
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
+        return object()
+
+    s = HostSettings(
+        host_auth_backend="bearer",
+        bearer_static_tokens={"tok": "did:key:zCaller"},
+        **settings,
+    )
+    return create_app(
+        settings=s, registry=RuntimeRegistry(s, builder=builder), usage_store=store
+    )
+
+
+async def test_header_cannot_select_another_org_for_reads() -> None:
+    app = await _bearer_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.get(
+            "/v1/usage", headers={"Authorization": "Bearer tok", "X-Org-Id": "acme"}
+        )
+        budget = await c.get(
+            "/v1/budget", headers={"Authorization": "Bearer tok", "X-Org-Id": "acme"}
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden_tenant"
+    assert budget.status_code == 403
+
+
+async def test_reads_without_header_use_identity_org() -> None:
+    app = await _bearer_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.get("/v1/usage", headers={"Authorization": "Bearer tok"})
+    assert resp.status_code == 200
+    assert resp.json()["org_id"] is None and resp.json()["turns"] == []
