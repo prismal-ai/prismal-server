@@ -99,7 +99,7 @@ async def get_usage(
 ) -> dict[str, Any]:
     """Per-turn usage of the caller's org, with whole-window totals."""
     identity = await authenticate(request)
-    org_id = resolve_org_id(request, identity)
+    org_id = resolve_org_id(request, identity, for_read=True)
     start, end = _window(since, until)
     after = _decode_cursor(cursor) if cursor else None
 
@@ -141,7 +141,7 @@ async def get_usage(
 async def get_budget(request: Request, thread_id: str | None = None) -> dict[str, Any]:
     """The org's budget status and gateway quota windows, as the engine reports them."""
     identity = await authenticate(request)
-    org_id = resolve_org_id(request, identity)
+    org_id = resolve_org_id(request, identity, for_read=True)
     runtime = await request.app.state.registry.get(org_id)
 
     view = runtime.budget_status(thread_id=thread_id)

@@ -80,7 +80,9 @@ class ForbiddenTenant(Exception):
         super().__init__("the requested tenant is not available to this caller")
 
 
-def resolve_org_id(request: Any, identity: AgentIdentity | None) -> str | None:
+def resolve_org_id(
+    request: Any, identity: AgentIdentity | None, *, for_read: bool = False
+) -> str | None:
     """Resolve the tenant ``org_id`` (SPEC-RHB-TEN-001).
 
     Order: the identity's ``org_id`` if present, else the ``X-Org-Id`` header,
@@ -95,13 +97,17 @@ def resolve_org_id(request: Any, identity: AgentIdentity | None) -> str | None:
       development (``host_auth_backend="none"`` outside ``production``);
       otherwise :class:`ForbiddenTenant` — never a silent fallback to the
       process (operator) tenant.
+
+    ``for_read=True`` (usage, budget, admin reads) applies those fail-closed
+    rules even without tenant config: reading another org's records must never
+    be possible by just sending a header.
     """
     header: str | None = request.headers.get("X-Org-Id")
     identity_org: str | None = identity.org_id if identity is not None else None
     state = getattr(getattr(request, "app", None), "state", None)
     settings = getattr(state, "settings", None) or get_settings()
 
-    if settings.host_tenant_config_dir is None:
+    if settings.host_tenant_config_dir is None and not for_read:
         # v0.1 behaviour (SPEC-RHB-TEN-001).
         return identity_org or header
 

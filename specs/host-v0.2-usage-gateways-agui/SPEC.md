@@ -72,6 +72,8 @@ with `"usage": null` and increment `prismal_server.usage_missing_total`.
 
 | ID | Requirement | Prio |
 |---|---|---|
+| SPEC-RH2-THR-001 | (MODIFIES SPEC-RHB-THR-001, engine side only) The host MUST pass the engine an org-scoped thread key (`f"{len(org_id)}:{org_id}:{thread_id}"`, raw `thread_id` when single-tenant) so conversation state and run summaries never cross tenants; every client-facing field keeps the client `thread_id`. | `MUST` |
+| SPEC-RH2-USE-004 | Usage, budget and admin reads MUST resolve the org from the authenticated identity; an `X-Org-Id` is honoured only when equal to it, or in dev no-auth outside `production`; otherwise `403 forbidden_tenant`. | `MUST` |
 | SPEC-RH2-USE-001 | WHEN `done` is emitted with non-null usage, THE SYSTEM SHALL append a `UsageRecord(org_id, thread_id, turn_id, finished_at, finish_reason, usage)` to the `UsageStore` (`memory` \| `sqlite`, retention `host_usage_retention_days`). | `MUST` |
 | SPEC-RH2-USE-002 | `GET /v1/usage?thread_id=&since=&until=&limit=&cursor=` MUST return the caller's org only; `since` defaults to now−24 h, `until` to now (RFC 3339 UTC); `limit` 1–500 (default 100). | `MUST` |
 | SPEC-RH2-USE-003 | `totals` and `by_model` MUST be computed over the whole window (not the page) by field-wise sum; `estimated` = OR; `cost_source` = common value or `mixed`; `totals.served_model`/`gateway` = `null`. `cache_hit_ratio` = `cache_read_tokens / prompt_tokens` rounded to 4 decimals (0.0 when prompt is 0). | `MUST` |

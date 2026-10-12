@@ -89,7 +89,8 @@ async def test_thread_and_org_are_threaded_into_config() -> None:
             headers={"X-Org-Id": "acme"},
         )
     cfg = calls[0]["config"]["configurable"]
-    assert cfg["thread_id"] == "t-9"
+    # Engine-side thread key is scoped to the org (cross-tenant isolation).
+    assert cfg["thread_id"] == "4:acme:t-9"
     assert cfg["org_id"] == "acme"
     # user content is passed only as graph input, never interpolated (CHT-005)
     assert calls[0]["input"]["messages"][0]["content"] == "hi"
