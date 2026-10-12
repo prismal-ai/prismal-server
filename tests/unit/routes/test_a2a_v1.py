@@ -335,3 +335,51 @@ async def test_unknown_single_segment_paths_stay_404() -> None:
         for method in ("GET", "PUT", "DELETE"):
             resp = await c.request(method, "/whatever")
             assert resp.status_code == 404, method
+
+
+# ── Tenant spoofing on the root route (security fix) ───────────────────────
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Org-Id": "beta", "Authorization": "Bearer acme"},
+        {"X-Org-Id": "beta"},
+    ],
+)
+async def test_root_rpc_header_cannot_select_another_org(
+    headers: dict[str, str],
+) -> None:
+    """``X-Org-Id`` never picks the org the engine isolates tasks by.
+
+    The handler scopes ``ListTasks``/``GetTask`` by the forwarded ``org_id``,
+    so a header-chosen org would read another tenant's tasks.
+    """
+    handler = RecordingHandler()
+    app, _ = _app(handler, host_auth_backend="bearer")
+    async with _client(app) as c:
+        resp = await c.post("/a2a", json=_rpc("ListTasks"), headers=headers)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden_tenant"
+    assert handler.calls == []
+
+
+async def test_root_rpc_header_matching_identity_org_is_allowed() -> None:
+    handler = RecordingHandler()
+    app, _ = _app(handler, host_auth_backend="bearer")
+    async with _client(app) as c:
+        resp = await c.post(
+            "/a2a",
+            json=_rpc("ListTasks"),
+            headers={"X-Org-Id": "acme", "Authorization": "Bearer acme"},
+        )
+    assert resp.status_code == 200
+    assert handler.calls[0]["org_id"] == "acme"
+
+
+async def test_root_rpc_header_honoured_only_in_dev_without_auth() -> None:
+    handler = RecordingHandler()
+    app, _ = _app(handler, host_auth_backend="none", host_environment="production")
+    async with _client(app) as c:
+        resp = await c.post("/a2a", json=_rpc("ListTasks"), headers={"X-Org-Id": "x"})
+    assert resp.status_code == 403 and handler.calls == []

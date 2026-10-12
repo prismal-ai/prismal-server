@@ -147,6 +147,10 @@ Phase 4 decisions (2026-10-12):
 - Public card requests build a runtime only for tenants with a `tenant.yaml` (bounded set); other
   tenants use process engine settings, which is what their runtime would use anyway.
 - Another-stack card (`?protocolVersion=`) is `404` unless `a2a_accept_legacy`.
+- Security fix: `POST /a2a` resolves the org fail-closed (`for_read=True`), as the tenant route
+  does. The engine scopes `ListTasks`/`GetTask` by the forwarded `org_id`, so a bare `X-Org-Id`
+  (or one differing from the identity org) is `403 forbidden_tenant`; it is honoured only for
+  `host_auth_backend=none` outside production.
 - `POST /a2a` and the root card stay for 0.1 compatibility. Recommended: set the engine
   `a2a_base_url` to end in `/a2a`, so the root card URL equals `POST /a2a` and tenants live at
   `/a2a/{tenant}`; with it unset, tenant routes sit at the root.
