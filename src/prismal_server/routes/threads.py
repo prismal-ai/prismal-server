@@ -12,6 +12,7 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -32,6 +33,18 @@ from prismal_server.usage.summary import TurnUsageProbe
 router = APIRouter(tags=["threads"])
 
 
+# Shape of an org-scoped engine key prefix (`<len>:`). A single-tenant raw id
+# with this shape could alias another org's key, so it is refused.
+_SCOPED_KEY_RE = re.compile(r"^\d+:")
+
+
+class InvalidThreadId(Exception):
+    """422 ``invalid_thread_id``: a raw id shaped like an org-scoped engine key."""
+
+    def __init__(self) -> None:
+        super().__init__("thread_id must not start with '<digits>:'")
+
+
 def engine_thread_id(org_id: str | None, thread_id: str) -> str:
     """The engine-side thread key: the client ``thread_id`` scoped to its org.
 
@@ -39,9 +52,15 @@ def engine_thread_id(org_id: str | None, thread_id: str) -> str:
     process-wide, and clients choose their own ids — so two tenants using the
     same id would share history and usage. The length prefix makes the mapping
     injective (``("a:b", "c")`` ≠ ``("a", "b:c")``). Single-tenant (``None``)
-    keeps the raw id. Clients only ever see their own ``thread_id``.
+    keeps the raw id for continuity, so a raw id that *looks* scoped
+    (``<digits>:…``) is refused — otherwise it could alias another org's key.
+    Clients only ever see their own ``thread_id``.
     """
-    return thread_id if org_id is None else f"{len(org_id)}:{org_id}:{thread_id}"
+    if org_id is not None:
+        return f"{len(org_id)}:{org_id}:{thread_id}"
+    if _SCOPED_KEY_RE.match(thread_id):
+        raise InvalidThreadId()
+    return thread_id
 
 
 class MessageIn(BaseModel):

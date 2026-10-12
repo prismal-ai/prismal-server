@@ -40,6 +40,7 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "ForbiddenTenant": (403, "forbidden_tenant"),  # auth/__init__.py
     "InvalidWindow": (400, "invalid_window"),  # routes/usage.py
     "InvalidCursor": (400, "invalid_cursor"),  # routes/usage.py
+    "InvalidThreadId": (422, "invalid_thread_id"),  # routes/threads.py
 }
 
 

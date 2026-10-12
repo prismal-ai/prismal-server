@@ -222,3 +222,27 @@ async def test_same_thread_id_in_two_orgs_does_not_share_usage() -> None:
         org_id="beta", thread_id=None, since=now - timedelta(minutes=1), until=now
     )
     assert beta_rows == []
+
+
+def test_single_tenant_cannot_forge_an_org_scoped_key() -> None:
+    """Security review: raw ids must never look like ``<len>:<org>:<thread>``."""
+    import pytest
+
+    from prismal_server.routes.threads import InvalidThreadId, engine_thread_id
+
+    for forged in ("4:acme:t-1", "0::x", "12:"):
+        with pytest.raises(InvalidThreadId):
+            engine_thread_id(None, forged)
+    assert engine_thread_id(None, "t:1") == "t:1"  # other colons are fine
+    assert engine_thread_id("acme", "4:beta:t") == "4:acme:4:beta:t"  # injective
+
+
+async def test_forged_thread_id_is_422_without_running_graph() -> None:
+    def astream(engine_thread: str) -> AsyncIterator[Any]:
+        raise AssertionError("graph must not run")
+
+    app, _ = _app(astream, {})
+    async with _client(app) as c:
+        resp = await c.post("/threads/4:acme:t-1/messages", json={"content": "x"})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "invalid_thread_id"
