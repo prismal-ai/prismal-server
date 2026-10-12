@@ -41,8 +41,7 @@ logger = logging.getLogger(__name__)
 TENANT_FILE = "tenant.yaml"
 ENGINE_ENV_PREFIX = "PRISMAL_"
 
-# SPEC-RH2-TEN-002. A tenant may tune gateways, decisions, routing, plan cache,
-# budget, AG-UI and the A2A version — never security, providers or storage.
+# SPEC-RH2-TEN-002 prefixes. Every key below must also carry one of them.
 ALLOWED_KEY_PREFIXES: tuple[str, ...] = (
     "llm_gateway_",
     "openrouter_",
@@ -56,27 +55,105 @@ ALLOWED_KEY_PREFIXES: tuple[str, ...] = (
     "plan_cache_",
     "budget_",
     "agui_",
+    "a2a_protocol_version",
 )
-ALLOWED_EXACT_KEYS: frozenset[str] = frozenset({"a2a_protocol_version"})
 
-# Denied even inside an allowed prefix (security review of RH2-1). A tenant must
-# not redirect an endpoint — with the operator's fallback key that exfiltrates
-# credentials — bill the operator's key, lower a security floor, or point the
-# engine at host filesystem paths. Endpoints/paths stay operator-only.
-DENIED_KEY_SUFFIXES: tuple[str, ...] = (
-    "_url",
-    "_path",
-    "_dir",
-    "_file",
-    "_min_version",
-    "_declared_version",
-    "_allow_unknown_version",
-)
-DENIED_EXACT_KEYS: frozenset[str] = frozenset(
+# Exact allowlist (security review of RH2-1): a prefix alone is not enough.
+# A tenant may *select and tune* gateways, decisions, routing, plan cache,
+# budget and AG-UI. It may NOT redirect an endpoint (a tenant URL plus the
+# operator's fallback key exfiltrates credentials), bill the operator's key,
+# lower a security/privacy/compliance floor (ZDR, retention and ToS deny-lists,
+# risk floor, HITL and calibration gates, remote Ollama, CVE version floors),
+# point the engine at host paths, or size process-wide resources. Any engine
+# key not listed here — including ones added in future engine releases — is
+# refused (fail-closed). Widening this set is a reviewed change.
+ALLOWED_KEYS: frozenset[str] = frozenset(
     {
-        "llm_gateway_openai_compatible",  # {base_url, auth_ref, headers}
-        "llm_gateway_tenant_key_fallback",  # bills the operator's key
-        "laya_checkpoint",  # local model checkpoint location
+        # Gateways
+        "llm_gateway_agent_map",
+        "openrouter_enabled",
+        "openrouter_api_key",
+        "openrouter_app_title",
+        "openrouter_app_categories",
+        "openrouter_session_stickiness",
+        "openrouter_plugins",
+        "openrouter_auto_tier",
+        "openrouter_provider_sort",
+        "openrouter_max_price",
+        "openrouter_only",
+        "openrouter_ignore",
+        "openrouter_fallback_models",
+        "opencode_zen_enabled",
+        "opencode_go_enabled",
+        "opencode_api_key",
+        "opencode_go_monthly_cap_usd",
+        "opencode_go_window_5h_ratio",
+        "opencode_go_window_week_ratio",
+        "opencode_go_quota_action",
+        "opencode_go_downgrade_model",
+        "omniroute_enabled",
+        "omniroute_api_key",
+        # Typed decisions (DEC)
+        "decisions_enabled",
+        "decision_routing_enabled",
+        "decision_eval_judge_enabled",
+        "decision_tool_proposal_enabled",
+        "decision_rag_relevance_enabled",
+        "decision_ctx_relevance_enabled",
+        "decision_swarm_eval_enabled",
+        "decision_backend_order",
+        "decision_modes",
+        "decision_timeout_ms",
+        "decision_shadow_sample_rate",
+        "decision_llm_fallback_model",
+        "decision_ollama_models",
+        "decision_ollama_keep_alive",
+        "decision_ollama_warmup",
+        "decision_ollama_accurate_max_p95_ms",
+        "decision_ollama_timeout_ms",
+        "decision_ollama_max_batch",
+        "jev_api_key",
+        "jev_model",
+        "jev_transport",
+        "jev_max_choice_options",
+        "jev_max_request_tokens",
+        "laya_mode",
+        "laya_api_key",
+        "laya_max_choice_options",
+        # Adaptive routing (AMR)
+        "adaptive_routing_enabled",
+        "routing_mode",
+        "routing_policy",
+        "routing_tier_capabilities",
+        "routing_cascade_start_tier",
+        "routing_cascade_max_escalations",
+        "routing_cascade_tool_error_threshold",
+        "routing_adequacy_tau",
+        "routing_adequacy_timeout_ms",
+        "routing_cache_affinity_enabled",
+        "routing_batch_alpha",
+        "routing_batch_max_iter",
+        "routing_batch_eps",
+        # Plan cache
+        "plan_cache_enabled",
+        "plan_cache_ttl_s",
+        # Budget (tenant cost governance, SPEC-RH2-BUD-*)
+        "budget_enabled",
+        "budget_max_tokens",
+        "budget_max_cost_usd",
+        "budget_max_calls",
+        "budget_max_wall_clock_s",
+        "budget_scope",
+        "budget_soft_ratio",
+        "budget_hard_cap",
+        "budget_pricing",
+        "budget_alert_usd",
+        # AG-UI + A2A
+        "agui_events_enabled",
+        "agui_include_state_deltas",
+        "agui_include_usage",
+        "agui_include_metadata",
+        "a2a_protocol_version",
     }
 )
 
@@ -102,13 +179,7 @@ class TenantConfigInvalid(Exception):
 
 def is_allowed_key(key: str) -> bool:
     """Whether a tenant may set engine key ``key`` (SPEC-RH2-TEN-002)."""
-    if key != key.lower():
-        return False
-    if key in ALLOWED_EXACT_KEYS:
-        return True
-    if key in DENIED_EXACT_KEYS or key.endswith(DENIED_KEY_SUFFIXES):
-        return False
-    return key.startswith(ALLOWED_KEY_PREFIXES)
+    return key in ALLOWED_KEYS
 
 
 class TenantConfigSource:

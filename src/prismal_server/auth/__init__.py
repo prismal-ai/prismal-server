@@ -21,6 +21,7 @@ from prismal_server.auth.base import AuthBackend, extract_bearer_token
 from prismal_server.auth.bearer import BearerTokenBackend
 from prismal_server.auth.noauth import NoAuthBackend
 from prismal_server.auth.oidc import OidcAuthBackend
+from prismal_server.config import get_settings
 
 if TYPE_CHECKING:
     from prismal.identity import AgentIdentity
@@ -72,6 +73,13 @@ async def authenticate(request: Request) -> AgentIdentity | None:
     return identity
 
 
+class ForbiddenTenant(Exception):
+    """The request names a tenant it may not use (HTTP 403 ``forbidden_tenant``)."""
+
+    def __init__(self) -> None:
+        super().__init__("the requested tenant is not available to this caller")
+
+
 def resolve_org_id(request: Any, identity: AgentIdentity | None) -> str | None:
     """Resolve the tenant ``org_id`` (SPEC-RHB-TEN-001).
 
@@ -79,25 +87,33 @@ def resolve_org_id(request: Any, identity: AgentIdentity | None) -> str | None:
     else ``None`` (single-tenant).
 
     WHERE per-tenant config is enabled (``host_tenant_config_dir``), tenants
-    carry their own gateway credentials, so the unauthenticated header is
-    honoured only in local development (``host_auth_backend="none"`` outside
-    ``production``); otherwise only an auth-resolved ``org_id`` selects a tenant.
+    carry their own gateway credentials, so tenant selection fails closed:
+
+    * an ``X-Org-Id`` that differs from the identity's ``org_id`` ⇒
+      :class:`ForbiddenTenant`;
+    * an ``X-Org-Id`` without an identity ``org_id`` is honoured only in local
+      development (``host_auth_backend="none"`` outside ``production``);
+      otherwise :class:`ForbiddenTenant` — never a silent fallback to the
+      process (operator) tenant.
     """
-    if identity is not None and identity.org_id:
-        org_id: str = identity.org_id
-        return org_id
     header: str | None = request.headers.get("X-Org-Id")
-    settings = getattr(
-        getattr(getattr(request, "app", None), "state", None), "settings", None
-    )
-    if (
-        header is not None
-        and settings is not None
-        and settings.host_tenant_config_dir is not None
-        and (
-            settings.host_auth_backend != "none"
-            or settings.host_environment == "production"
-        )
-    ):
+    identity_org: str | None = identity.org_id if identity is not None else None
+    state = getattr(getattr(request, "app", None), "state", None)
+    settings = getattr(state, "settings", None) or get_settings()
+
+    if settings.host_tenant_config_dir is None:
+        # v0.1 behaviour (SPEC-RHB-TEN-001).
+        return identity_org or header
+
+    if identity_org:
+        if header is not None and header != identity_org:
+            raise ForbiddenTenant()
+        return identity_org
+    if header is None:
         return None
-    return header
+    if (
+        settings.host_auth_backend == "none"
+        and settings.host_environment != "production"
+    ):
+        return header
+    raise ForbiddenTenant()

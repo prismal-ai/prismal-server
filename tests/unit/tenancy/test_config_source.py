@@ -306,3 +306,58 @@ def test_every_allowed_engine_key_is_non_sensitive() -> None:
         }
     ]
     assert leaked == []
+
+
+# ── Security review 2: exact allowlist (fail-closed for new engine keys) ──
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "openrouter_require_zdr",
+        "openrouter_allowed_variants",
+        "openrouter_allow_auto",
+        "openrouter_auto_allowed_models",
+        "opencode_denied_models",
+        "opencode_go_allowed_agents",
+        "omniroute_allow_subscription_upstreams",
+        "omniroute_upstream_attestation",
+        "omniroute_denied_combos",
+        "decision_ollama_allow_remote",
+        "decision_safety_prescreen_enabled",
+        "decision_hitl_enabled",
+        "decision_hitl_money_limit",
+        "decision_hitl_raise_threshold",
+        "decision_hitl_raise_thresholds",
+        "decision_tau_overrides",
+        "decision_max_ece",
+        "decision_min_calibration_examples",
+        "decision_min_margin",
+        "decision_demote_floor",
+        "decision_auto_demote",
+        "decision_languages",
+        "decision_eval_audit_rate",
+        "routing_risk_floor",
+        "routing_tier_models",
+        "plan_cache_intents",
+        "plan_cache_backend",
+        # Unknown future keys under an allowed prefix are denied by default.
+        "openrouter_some_future_flag",
+        "budget_future_override",
+    ],
+)
+def test_floors_and_unknown_keys_are_denied(key: str) -> None:
+    assert not is_allowed_key(key)
+
+
+def test_allowlist_names_real_engine_keys_under_spec_prefixes() -> None:
+    from prismal.core.config import Settings
+
+    from prismal_server.tenancy.config_source import (
+        ALLOWED_KEY_PREFIXES,
+        ALLOWED_KEYS,
+    )
+
+    assert ALLOWED_KEYS <= set(Settings.model_fields)
+    for key in ALLOWED_KEYS:
+        assert key == "a2a_protocol_version" or key.startswith(ALLOWED_KEY_PREFIXES)

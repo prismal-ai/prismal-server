@@ -52,14 +52,15 @@ Phase 1 decisions (2026-10-12):
 - Reload: mtime fingerprint (tenant.yaml + secret files) checked on each registry lookup; turns
   hold a `Lease`, so a stale or LRU-evicted runtime closes after its last in-flight turn.
 - Counter `tenant_config_reloads_total` is logged only for now (no host metrics backend yet) — RH2-07.
-- Security review fixes (post-merge): keys inside allowed prefixes are **denied** when they are
-  endpoints/paths/security floors (`*_url`, `*_path`, `*_dir`, `*_file`, `*_min_version`,
-  `*_declared_version`, `*_allow_unknown_version`, `llm_gateway_openai_compatible`,
-  `llm_gateway_tenant_key_fallback`, `laya_checkpoint`) — a tenant URL plus the operator's fallback
-  key would exfiltrate credentials. With tenant config enabled, `X-Org-Id` selects a tenant only in
-  dev no-auth (`host_auth_backend=none`, not `production`); otherwise only the auth-resolved
-  `org_id` does. Env secrets backend accepts only `^[a-z0-9]+(-[a-z0-9]+)*$` org ids (injective
-  mapping, no cross-tenant prefix overlap).
+- Security review fixes (post-merge, two rounds): the prefix allowlist became an **exact key
+  allowlist** (`ALLOWED_KEYS` in `tenancy/config_source.py`, every key also under a SPEC prefix).
+  Endpoints/URLs, operator-key fallback, host paths, process-wide resource sizing and
+  security/privacy/compliance floors (ZDR, retention/ToS deny-lists, risk floor, HITL and
+  calibration gates, remote Ollama, CVE version floors) are refused; engine keys added later are
+  refused by default. With tenant config enabled, tenant selection fails closed: `X-Org-Id` ≠
+  identity `org_id` ⇒ `403 forbidden_tenant`; header without identity org ⇒ honoured only in dev
+  no-auth outside `production`, else `403` (never a silent fallback to the process tenant). Env
+  secrets backend accepts only `^[a-z0-9]+(-[a-z0-9]+)*$` org ids (injective mapping).
 
 ## Phase 2 — Usage & budget
 

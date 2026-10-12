@@ -35,6 +35,7 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "A2AAgentUnavailable": (502, "a2a_agent_unavailable"),
     # Host-side (tenancy/config_source.py); its str() is already opaque.
     "TenantConfigInvalid": (500, "tenant_config_invalid"),
+    "ForbiddenTenant": (403, "forbidden_tenant"),  # auth/__init__.py
 }
 
 
