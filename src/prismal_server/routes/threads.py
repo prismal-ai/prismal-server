@@ -12,6 +12,7 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -22,7 +23,11 @@ from starlette.background import BackgroundTask
 
 from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import release_after
-from prismal_server.streaming import sse_stream
+from prismal_server.errors import is_budget_exceeded
+from prismal_server.streaming import ChunkPump, sse_stream
+from prismal_server.usage.models import UsageRecord, UsageWire
+from prismal_server.usage.store import new_turn_id
+from prismal_server.usage.summary import TurnUsageProbe
 
 router = APIRouter(tags=["threads"])
 
@@ -50,9 +55,29 @@ async def post_message(
     identity = await authenticate(request)
     org_id = resolve_org_id(request, identity)
 
+    settings = request.app.state.settings
+    store = request.app.state.usage_store
+    probe = TurnUsageProbe(thread_id, request.app.state.run_summary)
+
+    async def record_usage(finish_reason: str, usage: UsageWire | None) -> None:
+        # SPEC-RH2-USE-001: one record per `done` with non-null usage.
+        if usage is None:
+            return
+        await store.append(
+            UsageRecord(
+                org_id=org_id,
+                thread_id=thread_id,
+                turn_id=new_turn_id(),
+                finished_at=datetime.now(UTC),
+                finish_reason=finish_reason,
+                usage=usage,
+            )
+        )
+
     # The turn leases its runtime so a tenant-config reload or LRU eviction
     # closes it only after the stream ends (SPEC-RH2-TEN-004).
     lease = await request.app.state.registry.acquire(org_id)
+    pump: ChunkPump | None = None
     try:
         graph_factory = request.app.state.graph_factory
         graph = await graph_factory(
@@ -60,15 +85,29 @@ async def post_message(
         )
         config = {"configurable": {"thread_id": thread_id, "org_id": org_id}}
         graph_input = {"messages": [{"role": body.role, "content": body.content}]}
-        chunks = graph.astream(graph_input, config, stream_mode="messages")
+        pump = ChunkPump(graph.astream(graph_input, config, stream_mode="messages"))
+        # Peek the first item: a budget refusal before the first token is an
+        # HTTP 402, not a stream (SPEC-RH2 §11). Bounded by the heartbeat so a
+        # slow first token never delays the response headers indefinitely.
+        first = await pump.prime(wait_s=settings.sse_heartbeat_s)
+        if first is not None and first[0] == "error" and is_budget_exceeded(first[1]):
+            raise first[1]
     except BaseException:
+        if pump is not None:
+            await pump.aclose()
         await lease.release()
         raise
 
-    heartbeat_s = request.app.state.settings.sse_heartbeat_s
     return StreamingResponse(
         release_after(
-            lease, sse_stream(chunks, thread_id=thread_id, heartbeat_s=heartbeat_s)
+            lease,
+            sse_stream(
+                pump,
+                thread_id=thread_id,
+                heartbeat_s=settings.sse_heartbeat_s,
+                usage_for=probe.usage,
+                on_done=record_usage,
+            ),
         ),
         media_type="text/event-stream",
         # Idempotent backstop if the body is never iterated.

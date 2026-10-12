@@ -26,7 +26,9 @@ from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
-from prismal_server.routes import a2a, health, threads
+from prismal_server.routes import a2a, health, threads, usage
+from prismal_server.usage.store import UsageStore, build_usage_store
+from prismal_server.usage.summary import RunSummaryLookup, default_run_summary
 
 
 async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
@@ -62,6 +64,8 @@ def create_app(
     graph_factory: GraphFactory | None = None,
     agent_card_builder: AgentCardBuilder | None = None,
     auth_backend: AuthBackend | None = None,
+    usage_store: UsageStore | None = None,
+    run_summary: RunSummaryLookup | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
@@ -69,6 +73,8 @@ def create_app(
     graph_factory = graph_factory or _default_graph_factory
     agent_card_builder = agent_card_builder or _default_agent_card_builder
     auth_backend = auth_backend or build_auth_backend(settings)
+    usage_store = usage_store or build_usage_store(settings)
+    run_summary = run_summary or default_run_summary
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -80,6 +86,7 @@ def create_app(
         finally:
             # Shutdown: release every tenant runtime (SPEC-RHB-LIF-002).
             await registry.aclose_all()
+            await usage_store.aclose()
 
     app = FastAPI(
         title="prismal-server",
@@ -94,11 +101,14 @@ def create_app(
     app.state.agent_card_builder = agent_card_builder
     app.state.agent_card_cache = {}
     app.state.auth_backend = auth_backend
+    app.state.usage_store = usage_store
+    app.state.run_summary = run_summary
 
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(threads.router)
     app.include_router(a2a.router)
+    app.include_router(usage.router)
     return app
 
 

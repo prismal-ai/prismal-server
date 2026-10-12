@@ -5,6 +5,12 @@ Turns a graph ``astream(...)`` async iterator into an SSE byte stream: named
 terminal ``done`` (or ``error``) event, and prompt cancellation of the
 underlying graph work when the client disconnects (SPEC-RHB-CHT-002/003/004/006).
 
+v0.2: ``done`` carries the engine's 12-key ``usage`` (or ``null``, fail-open —
+SPEC-RH2-USG-001); a mid-stream ``BudgetExceeded`` becomes a terminal ``error``
+with ``scope``/``limit``/``consumed`` and the partial ``usage`` (SPEC-RH2 §11).
+:class:`ChunkPump` lets the route peek the first item, so a budget refusal
+before the first token is answered as HTTP 402 instead of a stream.
+
 Chunks are translated by duck typing — the host never imports langchain message
 types; it reads ``.content`` and ``.tool_call_chunks`` off whatever the graph
 yields.
@@ -15,10 +21,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable, Iterable
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any
 
+from prismal_server import metrics
 from prismal_server.errors import map_exception
+from prismal_server.usage.models import UsageWire
+
+logger = logging.getLogger(__name__)
 
 # A translated SSE event: (event name, JSON-serializable payload).
 SSEEvent = tuple[str, dict[str, Any]]
@@ -58,38 +69,87 @@ def default_translate(chunk: Any) -> list[SSEEvent]:
     return events
 
 
+# Queue items: ("chunk", chunk) | ("error", exc) | ("end", None).
+PumpItem = tuple[str, Any]
+UsageProvider = Callable[[], UsageWire | None]
+DoneHook = Callable[[str, UsageWire | None], Awaitable[None]]
+
+
+class ChunkPump:
+    """Drains a graph ``astream`` iterator into a queue on a background task.
+
+    The heartbeat timer then never cancels an in-flight graph step, and
+    :meth:`prime` can look at the first item before any response is sent.
+    """
+
+    def __init__(self, chunks: AsyncIterator[Any]) -> None:
+        self._queue: asyncio.Queue[PumpItem] = asyncio.Queue()
+        self._head: PumpItem | None = None
+        self._task = asyncio.create_task(self._produce(chunks))
+
+    async def _produce(self, chunks: AsyncIterator[Any]) -> None:
+        try:
+            async for chunk in chunks:
+                await self._queue.put(("chunk", chunk))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
+            await self._queue.put(("error", exc))
+        else:
+            await self._queue.put(("end", None))
+
+    async def prime(self, wait_s: float) -> PumpItem | None:
+        """Wait up to ``wait_s`` for the first item and keep it for :meth:`get`."""
+        if self._head is None:
+            try:
+                self._head = await asyncio.wait_for(self._queue.get(), timeout=wait_s)
+            except TimeoutError:
+                return None
+        return self._head
+
+    async def get(self, wait_s: float) -> PumpItem:
+        """Next item; raises ``TimeoutError`` after ``wait_s`` (heartbeat)."""
+        if self._head is not None:
+            item, self._head = self._head, None
+            return item
+        return await asyncio.wait_for(self._queue.get(), timeout=wait_s)
+
+    async def aclose(self) -> None:
+        """Cancel the producer, closing the underlying graph stream."""
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+
+def _safe_usage(usage_for: UsageProvider | None) -> UsageWire | None:
+    if usage_for is None:
+        return None
+    try:
+        return usage_for()
+    except Exception:  # telemetry is fail-open (DD-RH2-002)
+        logger.warning("usage lookup failed", exc_info=True)
+        return None
+
+
 async def sse_stream(
-    chunks: AsyncIterator[Any],
+    chunks: AsyncIterator[Any] | ChunkPump,
     *,
     thread_id: str,
     heartbeat_s: float = 15.0,
     translate: Callable[[Any], Iterable[SSEEvent]] = default_translate,
+    usage_for: UsageProvider | None = None,
+    on_done: DoneHook | None = None,
 ) -> AsyncIterator[str]:
-    """Bridge a graph ``astream`` iterator to SSE frames.
+    """Bridge a graph ``astream`` iterator (or a primed pump) to SSE frames.
 
-    A background producer drains ``chunks`` into a queue so the heartbeat timer
-    never cancels an in-flight graph step. On client disconnect the outer
-    generator is closed, and the ``finally`` cancels the producer — which closes
-    the underlying graph stream (SPEC-RHB-CHT-004).
+    On client disconnect the outer generator is closed, and the ``finally``
+    cancels the producer — which closes the graph stream (SPEC-RHB-CHT-004).
     """
-    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-
-    async def producer() -> None:
-        try:
-            async for chunk in chunks:
-                await queue.put(("chunk", chunk))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
-            await queue.put(("error", exc))
-        else:
-            await queue.put(("end", None))
-
-    task = asyncio.create_task(producer())
+    pump = chunks if isinstance(chunks, ChunkPump) else ChunkPump(chunks)
     try:
         while True:
             try:
-                kind, value = await asyncio.wait_for(queue.get(), timeout=heartbeat_s)
+                kind, value = await pump.get(wait_s=heartbeat_s)
             except TimeoutError:
                 yield sse_comment("heartbeat")
                 continue
@@ -99,15 +159,37 @@ async def sse_stream(
                     yield sse_event(event, payload)
             elif kind == "error":
                 mapped = map_exception(value)
-                yield sse_event(
-                    "error", {"code": mapped.code, "message": mapped.message}
-                )
+                error: dict[str, Any] = {
+                    "code": mapped.code,
+                    "message": mapped.message,
+                    **mapped.extra,
+                }
+                if mapped.code == "budget_exceeded":
+                    partial = _safe_usage(usage_for)
+                    error["usage"] = partial.model_dump() if partial else None
+                yield sse_event("error", error)
                 return
             else:  # "end"
                 break
 
-        yield sse_event("done", {"thread_id": thread_id, "finish_reason": "stop"})
+        finish_reason = "stop"
+        usage = _safe_usage(usage_for)
+        if usage is None:
+            metrics.increment("usage_missing_total")
+        if on_done is not None:
+            try:
+                await on_done(finish_reason, usage)
+            except Exception:  # persistence must not break the stream
+                logger.warning(
+                    "usage record failed for thread_id=%s", thread_id, exc_info=True
+                )
+        yield sse_event(
+            "done",
+            {
+                "thread_id": thread_id,
+                "finish_reason": finish_reason,
+                "usage": usage.model_dump() if usage else None,
+            },
+        )
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await pump.aclose()

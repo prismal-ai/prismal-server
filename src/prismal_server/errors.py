@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -31,11 +32,14 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "PolicyDenied": (403, "policy_denied"),
     "PermissionDeniedError": (403, "permission_denied"),
     "ToolPolicyDenied": (403, "policy_denied"),
-    "BudgetExceeded": (429, "budget_exceeded"),
+    # SPEC-RH2 §11 (was 429 in v0.1): 402 before the first token.
+    "BudgetExceeded": (402, "budget_exceeded"),
     "A2AAgentUnavailable": (502, "a2a_agent_unavailable"),
     # Host-side (tenancy/config_source.py); its str() is already opaque.
     "TenantConfigInvalid": (500, "tenant_config_invalid"),
     "ForbiddenTenant": (403, "forbidden_tenant"),  # auth/__init__.py
+    "InvalidWindow": (400, "invalid_window"),  # routes/usage.py
+    "InvalidCursor": (400, "invalid_cursor"),  # routes/usage.py
 }
 
 
@@ -46,6 +50,22 @@ class MappedError:
     status_code: int
     code: str
     message: str
+    # Additional ``error`` members (e.g. budget scope/limit/consumed).
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+def _budget_extra(exc: BaseException) -> dict[str, Any]:
+    """Budget ``scope``/``limit``/``consumed`` read off the engine exception."""
+    return {
+        "scope": getattr(exc, "scope", None),
+        "limit": getattr(exc, "limit", None),
+        "consumed": getattr(exc, "used", None),
+    }
+
+
+def is_budget_exceeded(exc: BaseException) -> bool:
+    """Whether ``exc`` is (a subclass of) the engine's ``BudgetExceeded``."""
+    return any(k.__name__ == "BudgetExceeded" for k in type(exc).__mro__)
 
 
 def map_exception(exc: BaseException) -> MappedError:
@@ -58,14 +78,17 @@ def map_exception(exc: BaseException) -> MappedError:
         entry = _NAME_MAP.get(klass.__name__)
         if entry is not None:
             status_code, code = entry
-            return MappedError(status_code, code, str(exc))
+            extra = _budget_extra(exc) if code == "budget_exceeded" else {}
+            return MappedError(status_code, code, str(exc), extra)
     return MappedError(500, "internal_error", _OPAQUE_500_MESSAGE)
 
 
 def _error_response(mapped: MappedError) -> JSONResponse:
     return JSONResponse(
         status_code=mapped.status_code,
-        content={"error": {"code": mapped.code, "message": mapped.message}},
+        content={
+            "error": {"code": mapped.code, "message": mapped.message, **mapped.extra}
+        },
     )
 
 
