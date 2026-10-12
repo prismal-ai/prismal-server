@@ -61,10 +61,18 @@ class GraphFactory(Protocol):
 class AgentCardBuilder(Protocol):
     """Builds the A2A Agent Card dict for a tenant (camelCase wire form).
 
+    ``protocol_version=None`` ⇒ the engine's configured version; ``settings``
+    is the tenant runtime's engine settings (None ⇒ process settings).
     Injectable so route tests supply a fake and never import the engine card.
     """
 
-    def __call__(self, *, org_id: str | None) -> dict[str, Any]: ...
+    def __call__(
+        self,
+        *,
+        org_id: str | None,
+        protocol_version: str | None = None,
+        settings: Any = None,
+    ) -> dict[str, Any]: ...
 
 
 async def _default_builder(
@@ -155,6 +163,19 @@ class RuntimeRegistry:
         entry = await self._current(org_id)
         entry.leases += 1
         return Lease(self, entry)
+
+    async def has_tenant_config(self, org_id: str | None) -> bool:
+        """Whether ``org_id`` has its own ``tenant.yaml`` (never raises).
+
+        Lets public endpoints (A2A cards) build a runtime only for configured
+        tenants — a bounded set — instead of for any name a caller sends.
+        """
+        if self._tenant_config is None or org_id is None:
+            return False
+        try:
+            return await self._fingerprint(org_id) is not None
+        except TenantConfigInvalid:
+            return False
 
     async def _fingerprint(self, org_id: str | None) -> TenantFingerprint | None:
         if self._tenant_config is None or org_id is None:

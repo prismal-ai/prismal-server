@@ -19,7 +19,7 @@ class FakeHandler:
         self.calls: list[tuple[dict[str, Any], Any]] = []
 
     async def handle_rpc(
-        self, request: dict[str, Any], *, auth_ctx: Any = None
+        self, request: dict[str, Any], *, auth_ctx: Any = None, **_: Any
     ) -> dict[str, Any]:
         self.calls.append((request, auth_ctx))
         # Mimic the engine's strict gate: unauth → JSON-RPC -32001.
@@ -36,7 +36,7 @@ class FakeHandler:
         }
 
     async def stream_rpc(
-        self, request: dict[str, Any], *, auth_ctx: Any = None
+        self, request: dict[str, Any], *, auth_ctx: Any = None, **_: Any
     ) -> AsyncIterator[str]:
         self.calls.append((request, auth_ctx))
         yield 'data: {"kind":"artifact","n":1}\n\n'
@@ -72,7 +72,7 @@ def _make_app(
     card = card if card is not None else {"name": "prismal", "protocolVersion": "0.3.0"}
     card_calls = {"n": 0}
 
-    def card_builder(*, org_id: str | None) -> dict[str, Any]:
+    def card_builder(*, org_id: str | None, **_: Any) -> dict[str, Any]:
         card_calls["n"] += 1
         return card
 
