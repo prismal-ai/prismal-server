@@ -43,3 +43,49 @@ def test_bearer_static_tokens_are_secret() -> None:
     # The raw value never appears in the model's repr.
     assert "zCaller" not in repr(s)
     assert secret.get_secret_value() == "did:key:zCaller"
+
+
+# ── Host v0.2 settings (RH2-01-01, SPEC-RH2 §10) ────────────────────────────
+
+
+def test_v02_defaults_match_spec() -> None:
+    s = HostSettings()
+    assert s.host_environment == "development"
+    assert s.host_tenant_config_dir is None
+    assert s.host_secrets_backend == "file"
+    assert s.host_secrets_dir is None
+    assert s.host_usage_store == "memory"
+    assert str(s.host_usage_db_path) == "usage.db"
+    assert s.host_usage_retention_days == 90
+    assert s.host_agui_enabled is True
+    assert s.host_ws_enabled is False
+    assert s.host_ws_max_message_bytes == 1_048_576
+    assert s.host_fake_llm_mode is False
+    assert s.host_admin_enabled is False
+    assert s.host_admin_scope == "prismal:admin"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("host_environment", "prod"),
+        ("host_secrets_backend", "vault"),
+        ("host_usage_store", "postgres"),
+        ("host_usage_retention_days", 0),
+        ("host_ws_max_message_bytes", 0),
+        ("host_admin_scope", ""),
+    ],
+)
+def test_v02_settings_are_validated(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        HostSettings(**{field: value})  # type: ignore[arg-type]
+
+
+def test_v02_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> None:
+    monkeypatch.setenv("PRISMAL_SERVER_HOST_TENANT_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("PRISMAL_SERVER_HOST_SECRETS_BACKEND", "env")
+    monkeypatch.setenv("PRISMAL_SERVER_HOST_ENVIRONMENT", "staging")
+    s = HostSettings()
+    assert str(s.host_tenant_config_dir) == str(tmp_path)
+    assert s.host_secrets_backend == "env"
+    assert s.host_environment == "staging"

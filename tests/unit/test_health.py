@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from httpx import ASGITransport, AsyncClient
 
 from prismal_server.app import create_app
@@ -24,7 +26,7 @@ async def test_readyz_ready_when_default_runtime_composes(client: AsyncClient) -
 async def test_readyz_not_ready_when_composition_fails() -> None:
     class RuntimeCompositionError(Exception): ...
 
-    async def failing_builder(*, org_id: str | None):  # type: ignore[no-untyped-def]
+    async def failing_builder(*, org_id: str | None, config_source: Any = None):  # type: ignore[no-untyped-def]
         raise RuntimeCompositionError("chroma unreachable at 10.0.0.5:8000")
 
     registry = RuntimeRegistry(HostSettings(), builder=failing_builder)

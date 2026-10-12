@@ -33,6 +33,8 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "ToolPolicyDenied": (403, "policy_denied"),
     "BudgetExceeded": (429, "budget_exceeded"),
     "A2AAgentUnavailable": (502, "a2a_agent_unavailable"),
+    # Host-side (tenancy/config_source.py); its str() is already opaque.
+    "TenantConfigInvalid": (500, "tenant_config_invalid"),
 }
 
 
