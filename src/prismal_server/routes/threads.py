@@ -13,7 +13,7 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -25,12 +25,15 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from prismal_server.auth import authenticate, resolve_org_id
-from prismal_server.deps import release_after
+from prismal_server.deps import Lease, release_after
 from prismal_server.errors import is_budget_exceeded
 from prismal_server.streaming import (
     STREAM_PROTOCOL_HEADER,
     ChunkPump,
+    DoneHook,
+    agui_events,
     agui_stream,
+    native_events,
     sse_stream,
 )
 from prismal_server.usage.models import UsageRecord, UsageWire
@@ -117,30 +120,109 @@ def _engine_settings(runtime: Any) -> Any:
     return settings
 
 
-async def run_turn(
-    request: Request,
+class Turn:
+    """One running chat turn, independent of the transport (SSE or WebSocket).
+
+    Holds the runtime lease and the graph pump; :meth:`events` yields the
+    native ``(name, data)`` or engine AG-UI events (``None`` = idle heartbeat)
+    and :meth:`aclose` is the idempotent cleanup.
+    """
+
+    def __init__(
+        self,
+        *,
+        lease: Lease,
+        pump: ChunkPump,
+        thread_id: str,
+        engine_settings: Any,
+        probe: TurnUsageProbe,
+        record_usage: DoneHook,
+        agui: bool,
+        run_id: str | None,
+        heartbeat_s: float,
+    ) -> None:
+        self.lease = lease
+        self.pump = pump
+        self.thread_id = thread_id
+        self.agui = agui
+        self._engine_settings = engine_settings
+        self._probe = probe
+        self._record_usage = record_usage
+        self._run_id = run_id
+        self._heartbeat_s = heartbeat_s
+
+    def events(self) -> AsyncGenerator[Any]:
+        if not self.agui:
+            return native_events(
+                self.pump,
+                thread_id=self.thread_id,
+                heartbeat_s=self._heartbeat_s,
+                usage_for=self._probe.usage,
+                on_done=self._record_usage,
+            )
+        return agui_events(
+            self.pump,
+            ctx=self._agui_context(),
+            heartbeat_s=self._heartbeat_s,
+            summary_for=self._probe.summary,
+            on_done=self._record_usage,
+        )
+
+    def sse_body(self) -> AsyncIterator[str]:
+        if not self.agui:
+            return sse_stream(
+                self.pump,
+                thread_id=self.thread_id,
+                heartbeat_s=self._heartbeat_s,
+                usage_for=self._probe.usage,
+                on_done=self._record_usage,
+            )
+        return agui_stream(
+            self.pump,
+            ctx=self._agui_context(),
+            heartbeat_s=self._heartbeat_s,
+            summary_for=self._probe.summary,
+            on_done=self._record_usage,
+        )
+
+    def _agui_context(self) -> AgUiContext:
+        engine = self._engine_settings
+        return AgUiContext(
+            run_id=self._run_id or uuid4().hex,
+            thread_id=self.thread_id,  # client-facing id, never the engine key
+            include_state_deltas=bool(
+                getattr(engine, "agui_include_state_deltas", True)
+            ),
+            include_usage=bool(getattr(engine, "agui_include_usage", True)),
+            include_metadata=bool(getattr(engine, "agui_include_metadata", True)),
+        )
+
+    async def aclose(self) -> None:
+        await self.pump.aclose()
+        await self.lease.release()
+
+
+async def open_turn(
+    state: Any,
     *,
+    org_id: str | None,
     thread_id: str,
     role: str,
     content: str,
     agui: bool,
     run_id: str | None = None,
-) -> StreamingResponse:
-    """Run one chat turn and stream it natively or as AG-UI.
+    pump_maxsize: int = 0,
+) -> Turn:
+    """Start one chat turn for an already-resolved tenant (``state`` = app.state).
 
-    Shared by ``POST /threads/{id}/messages`` and ``POST /v1/agui``: tenant
-    resolution, org-scoped engine thread key, runtime lease, AG-UI gate (406
-    before any graph work), 402 on a pre-token budget refusal, usage record.
+    Org-scoped engine thread key, runtime lease, AG-UI gate
+    (``ProtocolNotEnabled`` before any graph work), usage record on ``done``.
     User content is passed **only** as graph input (CHT-005).
     """
-    # Resolve identity (401 in strict mode) then the tenant (TEN-001, AUT-005).
-    identity = await authenticate(request)
-    org_id = resolve_org_id(request, identity)
-
-    settings = request.app.state.settings
-    store = request.app.state.usage_store
+    settings = state.settings
+    store = state.usage_store
     engine_thread = engine_thread_id(org_id, thread_id)
-    probe = TurnUsageProbe(engine_thread, request.app.state.run_summary)
+    probe = TurnUsageProbe(engine_thread, state.run_summary)
 
     async def record_usage(finish_reason: str, usage: UsageWire | None) -> None:
         # SPEC-RH2-USE-001: one record per finished turn with non-null usage.
@@ -159,8 +241,7 @@ async def run_turn(
 
     # The turn leases its runtime so a tenant-config reload or LRU eviction
     # closes it only after the stream ends (SPEC-RH2-TEN-004).
-    lease = await request.app.state.registry.acquire(org_id)
-    pump: ChunkPump | None = None
+    lease = await state.registry.acquire(org_id)
     try:
         engine_settings = _engine_settings(lease.runtime)
         if agui and not (
@@ -168,63 +249,79 @@ async def run_turn(
             and getattr(engine_settings, "agui_events_enabled", False)
         ):
             raise ProtocolNotEnabled()  # SPEC-RH2-AGU-003: before streaming
-        graph_factory = request.app.state.graph_factory
-        graph = await graph_factory(
+        graph = await state.graph_factory(
             tool_provider=getattr(lease.runtime, "tool_provider", None)
         )
         config = {"configurable": {"thread_id": engine_thread, "org_id": org_id}}
         graph_input = {"messages": [{"role": role, "content": content}]}
         stream_mode: Any = _AGUI_STREAM_MODES if agui else "messages"
-        pump = ChunkPump(graph.astream(graph_input, config, stream_mode=stream_mode))
+        pump = ChunkPump(
+            graph.astream(graph_input, config, stream_mode=stream_mode),
+            maxsize=pump_maxsize,
+        )
+    except BaseException:
+        await lease.release()
+        raise
+    return Turn(
+        lease=lease,
+        pump=pump,
+        thread_id=thread_id,
+        engine_settings=engine_settings,
+        probe=probe,
+        record_usage=record_usage,
+        agui=agui,
+        run_id=run_id,
+        heartbeat_s=settings.sse_heartbeat_s,
+    )
+
+
+async def run_turn(
+    request: Request,
+    *,
+    thread_id: str,
+    role: str,
+    content: str,
+    agui: bool,
+    run_id: str | None = None,
+) -> StreamingResponse:
+    """Run one chat turn over HTTP and stream it natively or as AG-UI.
+
+    Shared by ``POST /threads/{id}/messages`` and ``POST /v1/agui``: auth and
+    tenant resolution, then :func:`open_turn`; a budget refusal before the
+    first token is HTTP 402.
+    """
+    # Resolve identity (401 in strict mode) then the tenant (TEN-001, AUT-005).
+    identity = await authenticate(request)
+    org_id = resolve_org_id(request, identity)
+    settings = request.app.state.settings
+
+    turn = await open_turn(
+        request.app.state,
+        org_id=org_id,
+        thread_id=thread_id,
+        role=role,
+        content=content,
+        agui=agui,
+        run_id=run_id,
+    )
+    try:
         # Peek the first item: a budget refusal before the first token is an
         # HTTP 402, not a stream (SPEC-RH2 §11). Bounded by the heartbeat so a
         # slow first token never delays the response headers indefinitely.
-        first = await pump.prime(wait_s=settings.sse_heartbeat_s)
+        first = await turn.pump.prime(wait_s=settings.sse_heartbeat_s)
         if first is not None and first[0] == "error" and is_budget_exceeded(first[1]):
             raise first[1]
     except BaseException:
-        if pump is not None:
-            await pump.aclose()
-        await lease.release()
+        await turn.aclose()
         raise
 
-    body: AsyncIterator[str]
-    headers: dict[str, str] = {}
-    if agui:
-        ctx = AgUiContext(
-            run_id=run_id or uuid4().hex,
-            thread_id=thread_id,  # client-facing id, never the engine key
-            include_state_deltas=bool(
-                getattr(engine_settings, "agui_include_state_deltas", True)
-            ),
-            include_usage=bool(getattr(engine_settings, "agui_include_usage", True)),
-            include_metadata=bool(
-                getattr(engine_settings, "agui_include_metadata", True)
-            ),
-        )
-        body = agui_stream(
-            pump,
-            ctx=ctx,
-            heartbeat_s=settings.sse_heartbeat_s,
-            summary_for=probe.summary,
-            on_done=record_usage,
-        )
-        headers[STREAM_PROTOCOL_HEADER] = "ag-ui"
-    else:
-        body = sse_stream(
-            pump,
-            thread_id=thread_id,
-            heartbeat_s=settings.sse_heartbeat_s,
-            usage_for=probe.usage,
-            on_done=record_usage,
-        )
-
+    headers = {STREAM_PROTOCOL_HEADER: "ag-ui"} if agui else {}
     return StreamingResponse(
-        release_after(lease, body),
+        release_after(turn.lease, turn.sse_body()),
         media_type="text/event-stream",
         headers=headers,
         # Idempotent backstop if the body is never iterated.
-        background=BackgroundTask(lease.release),
+        background=BackgroundTask(turn.lease.release),
     )
 
 
