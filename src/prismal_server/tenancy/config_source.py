@@ -16,6 +16,17 @@ that tenant is refused.
 (lists/maps are JSON-encoded for the engine's settings decoder). Secret keys
 (``*_api_key`` / ``*_token``) are **not** accepted inline; they come only from
 the ``TenantSecretsPort``.
+
+Trust model (decided 2026-10-12, SPEC-RH2-TEN-005): ``tenant.yaml`` and tenant
+secrets are **operator-authored** — the host vault is owned by the operator and
+tenants never edit their own config. Per-tenant budget limits, gateway quotas
+and decision/routing modes are therefore the operator's per-tenant policy, not a
+tenant-controlled override, and are allowed by design. The exact allowlist is
+defense in depth against operator mistakes: even the operator cannot use a
+tenant file to redirect endpoints, enable operator-key fallback, point at host
+paths or lower security/privacy/compliance floors — those stay process-level.
+Self-service (tenant-authored) config is out of scope; it would need a
+tighten-only layer over operator ceilings and a SPEC change.
 """
 
 from __future__ import annotations
