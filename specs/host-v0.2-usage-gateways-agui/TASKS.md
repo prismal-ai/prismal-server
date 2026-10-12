@@ -127,10 +127,29 @@ Phase 3 decisions (2026-10-12):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-04-01 | Forward headers + `org_id` to `handle_rpc` / `stream_rpc` | 0.3 d | 00-03 | A2A-001 | `TODO` |
-| RH2-04-02 | Versioned card (`?protocolVersion=`), tenant-scoped routes | 0.5 d | 04-01 | A2A-002/003 | `TODO` |
-| RH2-04-03 | Path-tenant mismatch `403`; v0.1 strict/404 behaviours on both stacks | 0.3 d | 04-02 | A2A-003/004 | `TODO` |
-| RH2-04-04 | Tests: v0.3 + v1 client smoke, `tasks/list` through the host | 0.4 d | 04-03 | A2A-* | `TODO` |
+| RH2-04-01 | Forward headers + `org_id` to `handle_rpc` / `stream_rpc` | 0.3 d | 00-03 | A2A-001 | `DONE` |
+| RH2-04-02 | Versioned card (`?protocolVersion=`), tenant-scoped routes | 0.5 d | 04-01 | A2A-002/003 | `DONE` |
+| RH2-04-03 | Path-tenant mismatch `403`; v0.1 strict/404 behaviours on both stacks | 0.3 d | 04-02 | A2A-003/004 | `DONE` |
+| RH2-04-04 | Tests: v0.3 + v1 client smoke, `tasks/list` through the host | 0.4 d | 04-03 | A2A-* | `DONE` |
+
+Phase 4 decisions (2026-10-12):
+- Streaming dispatch uses the engine's own method names (`prismal.a2a.v1.constants`
+  `METHOD_SEND_STREAMING_MESSAGE`, `LEGACY_METHOD_STREAM`) — no host protocol constants. That
+  module is under the v0.1 `prismal.a2a` seam prefix, not an HRS §3 row: open item for RH2-07-01
+  together with `prismal.identity`.
+- Headers forwarded to the engine exclude `Authorization`, `Proxy-Authorization` and `Cookie`;
+  `?A2A-Version=` becomes the header when absent.
+- Tenant routes `{base}/{tenant}` (POST) and `{base}/{tenant}/.well-known/agent-card.json` live
+  under the path of the engine's `a2a_base_url`, registered after every fixed route; other methods
+  on `{base}/{tenant}` answer 404. The RPC route requires the auth-resolved org == path tenant
+  (`403 forbidden_tenant` before the handler) and checks `runtime.a2a_routes()`; the card route is
+  public and checks `a2a_route_paths()`.
+- Public card requests build a runtime only for tenants with a `tenant.yaml` (bounded set); other
+  tenants use process engine settings, which is what their runtime would use anyway.
+- Another-stack card (`?protocolVersion=`) is `404` unless `a2a_accept_legacy`.
+- `POST /a2a` and the root card stay for 0.1 compatibility. Recommended: set the engine
+  `a2a_base_url` to end in `/a2a`, so the root card URL equals `POST /a2a` and tenants live at
+  `/a2a/{tenant}`; with it unset, tenant routes sit at the root.
 
 ## Phase 5 — WebSocket
 
@@ -212,3 +231,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.2 | 2026-10-12 | Ernesto Crespo | Phase 1 `DONE` (tenant config & gateways) |
 | 1.3 | 2026-10-12 | Ernesto Crespo | Phase 2 `DONE` (usage & budget) |
 | 1.4 | 2026-10-12 | Ernesto Crespo | Phase 3 `DONE` (AG-UI) |
+| 1.5 | 2026-10-12 | Ernesto Crespo | Phase 4 `DONE` (A2A v1.0 dual stack) |

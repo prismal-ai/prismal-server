@@ -36,7 +36,12 @@ async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
     return await get_async_compiled_graph(tool_provider=tool_provider)
 
 
-def _default_agent_card_builder(*, org_id: str | None = None) -> dict[str, Any]:
+def _default_agent_card_builder(
+    *,
+    org_id: str | None = None,
+    protocol_version: str | None = None,
+    settings: Any = None,
+) -> dict[str, Any]:
     """Build the Agent Card via the A2A seam (camelCase wire form).
 
     Imports are deferred and sourced only from ``prismal.a2a`` (the seam
@@ -52,9 +57,19 @@ def _default_agent_card_builder(*, org_id: str | None = None) -> dict[str, Any]:
     )
 
     card = build_agent_card(
-        get_engine_settings(), DEFAULT_CAPABILITY_MAP, org_id=org_id
+        settings or get_engine_settings(),
+        DEFAULT_CAPABILITY_MAP,
+        org_id=org_id,
+        protocol_version=protocol_version,
     )
     return cast("dict[str, Any]", card.model_dump(by_alias=True))
+
+
+def _default_a2a_engine_settings() -> Any:
+    """Process engine settings for A2A routing (base URL, version, legacy)."""
+    from prismal.a2a import get_settings as get_engine_settings  # noqa: PLC0415
+
+    return get_engine_settings()
 
 
 def create_app(
@@ -66,6 +81,7 @@ def create_app(
     auth_backend: AuthBackend | None = None,
     usage_store: UsageStore | None = None,
     run_summary: RunSummaryLookup | None = None,
+    a2a_engine_settings: Any = None,
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
@@ -75,6 +91,7 @@ def create_app(
     auth_backend = auth_backend or build_auth_backend(settings)
     usage_store = usage_store or build_usage_store(settings)
     run_summary = run_summary or default_run_summary
+    a2a_engine_settings = a2a_engine_settings or _default_a2a_engine_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -103,6 +120,7 @@ def create_app(
     app.state.auth_backend = auth_backend
     app.state.usage_store = usage_store
     app.state.run_summary = run_summary
+    app.state.a2a_engine_settings = a2a_engine_settings
 
     register_exception_handlers(app)
     app.include_router(health.router)
@@ -110,6 +128,13 @@ def create_app(
     app.include_router(a2a.router)
     app.include_router(usage.router)
     app.include_router(agui.router)
+    # Tenant-scoped A2A routes match `{base}/{tenant}`: registered last so every
+    # fixed route above wins (SPEC-RH2-A2A-003).
+    app.include_router(
+        a2a.tenant_router(
+            a2a.base_path(getattr(a2a_engine_settings, "a2a_base_url", None))
+        )
+    )
     return app
 
 
