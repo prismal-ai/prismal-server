@@ -196,7 +196,9 @@ async def a2a_rpc(request: Request) -> Any:
     # Resolve identity for tenant selection + AuthContext; the host never rejects
     # here (no 401) — the handler owns A2A strict-mode gating (JSON-RPC -32001).
     identity = await request.app.state.auth_backend.resolve(request)
-    org_id = resolve_org_id(request, identity)
+    # Fail-closed (``for_read``): the engine scopes ListTasks/GetTask by this
+    # org_id, so a bare ``X-Org-Id`` must never select another tenant's tasks.
+    org_id = resolve_org_id(request, identity, for_read=True)
     lease = await request.app.state.registry.acquire(org_id)
     return await _dispatch(request, lease=lease, identity=identity, org_id=org_id)
 
