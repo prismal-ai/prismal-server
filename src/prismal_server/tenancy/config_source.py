@@ -59,6 +59,27 @@ ALLOWED_KEY_PREFIXES: tuple[str, ...] = (
 )
 ALLOWED_EXACT_KEYS: frozenset[str] = frozenset({"a2a_protocol_version"})
 
+# Denied even inside an allowed prefix (security review of RH2-1). A tenant must
+# not redirect an endpoint — with the operator's fallback key that exfiltrates
+# credentials — bill the operator's key, lower a security floor, or point the
+# engine at host filesystem paths. Endpoints/paths stay operator-only.
+DENIED_KEY_SUFFIXES: tuple[str, ...] = (
+    "_url",
+    "_path",
+    "_dir",
+    "_file",
+    "_min_version",
+    "_declared_version",
+    "_allow_unknown_version",
+)
+DENIED_EXACT_KEYS: frozenset[str] = frozenset(
+    {
+        "llm_gateway_openai_compatible",  # {base_url, auth_ref, headers}
+        "llm_gateway_tenant_key_fallback",  # bills the operator's key
+        "laya_checkpoint",  # local model checkpoint location
+    }
+)
+
 _ORG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 ConfigValue = str | SecretStr
@@ -83,7 +104,11 @@ def is_allowed_key(key: str) -> bool:
     """Whether a tenant may set engine key ``key`` (SPEC-RH2-TEN-002)."""
     if key != key.lower():
         return False
-    return key in ALLOWED_EXACT_KEYS or key.startswith(ALLOWED_KEY_PREFIXES)
+    if key in ALLOWED_EXACT_KEYS:
+        return True
+    if key in DENIED_EXACT_KEYS or key.endswith(DENIED_KEY_SUFFIXES):
+        return False
+    return key.startswith(ALLOWED_KEY_PREFIXES)
 
 
 class TenantConfigSource:

@@ -11,7 +11,10 @@ Backends:
   ``<root>/<org_id>/<subdir>/<key>``), content stripped. Files should be mode
   ``0600``; looser modes are logged as a warning (the value never is).
 * ``env`` — read-only view of ``PRISMAL_SERVER_SECRET__<ORG>__<KEY>`` where
-  ``<ORG>`` is the upper-cased ``org_id`` with ``-``/``.`` mapped to ``_``.
+  ``<ORG>`` is the upper-cased ``org_id`` with ``-`` mapped to ``_``. Only
+  ``org_id`` values of lowercase alphanumerics joined by single hyphens are
+  accepted, so the mapping is injective and one tenant's prefix can never
+  match another tenant's variables.
 """
 
 from __future__ import annotations
@@ -91,8 +94,13 @@ class FileSecrets:
         return tuple((p.name, p.stat().st_mtime_ns) for p in self._files(org_id))
 
 
+_ENV_ORG_ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
 def _env_org_token(org_id: str) -> str:
-    return re.sub(r"[-.]", "_", org_id).upper()
+    if not _ENV_ORG_ID_RE.fullmatch(org_id):
+        raise ValueError("org_id unsupported by the env secrets backend")
+    return org_id.replace("-", "_").upper()
 
 
 class EnvSecrets:

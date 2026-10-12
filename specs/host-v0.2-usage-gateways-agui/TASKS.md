@@ -52,6 +52,14 @@ Phase 1 decisions (2026-10-12):
 - Reload: mtime fingerprint (tenant.yaml + secret files) checked on each registry lookup; turns
   hold a `Lease`, so a stale or LRU-evicted runtime closes after its last in-flight turn.
 - Counter `tenant_config_reloads_total` is logged only for now (no host metrics backend yet) — RH2-07.
+- Security review fixes (post-merge): keys inside allowed prefixes are **denied** when they are
+  endpoints/paths/security floors (`*_url`, `*_path`, `*_dir`, `*_file`, `*_min_version`,
+  `*_declared_version`, `*_allow_unknown_version`, `llm_gateway_openai_compatible`,
+  `llm_gateway_tenant_key_fallback`, `laya_checkpoint`) — a tenant URL plus the operator's fallback
+  key would exfiltrate credentials. With tenant config enabled, `X-Org-Id` selects a tenant only in
+  dev no-auth (`host_auth_backend=none`, not `production`); otherwise only the auth-resolved
+  `org_id` does. Env secrets backend accepts only `^[a-z0-9]+(-[a-z0-9]+)*$` org ids (injective
+  mapping, no cross-tenant prefix overlap).
 
 ## Phase 2 — Usage & budget
 

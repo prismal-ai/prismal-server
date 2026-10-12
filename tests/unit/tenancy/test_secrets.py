@@ -117,3 +117,20 @@ def test_build_secrets_defaults_to_tenant_dir_layout(tmp_path: Path) -> None:
     _write_secret(tmp_path / "acme" / "secrets" / "openrouter_api_key", CANARY)
     backend = build_secrets(HostSettings(host_tenant_config_dir=tmp_path))
     assert set(backend.load("acme")) == {"openrouter_api_key"}
+
+
+# ── Security review fix: env backend must map org_id injectively ─────────
+
+
+@pytest.mark.parametrize(
+    "org_id", ["acme_corp", "ACME-corp", "acme.corp", "a--b", "-a", "a-", "Acme"]
+)
+def test_env_secrets_refuses_ambiguous_org_ids(org_id: str) -> None:
+    with pytest.raises(ValueError):
+        EnvSecrets({}).load(org_id)
+
+
+def test_env_secrets_prefix_does_not_bleed_across_tenants() -> None:
+    environ = {"PRISMAL_SERVER_SECRET__A_B__OPENROUTER_API_KEY": CANARY}
+    assert EnvSecrets(environ).load("a") == {}
+    assert set(EnvSecrets(environ).load("a-b")) == {"openrouter_api_key"}
