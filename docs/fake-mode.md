@@ -20,6 +20,8 @@ PRISMAL_SERVER_HOST_FAKE_LLM_MODE=true uvicorn prismal_server.app:app
 | Input `content` | Result |
 |---|---|
 | `/tool <q>` | one `tool_call` `{"name":"fake_tool","args":{"q":"<q>"}}` |
+| `/interrupt <msg>` | AG-UI mode: a LangGraph interrupt `fake-int-<n>.fake-ckpt-<m>` (`reason: input_required`, `message: <msg>`), so the run ends with `outcome.type = "interrupt"`; resuming it echoes `resumed: <json of the resume map>` |
+| `/interrupt2 <msg>` | like `/interrupt`, but the resumed step interrupts **again with the same engine id** (models a node that loops over approvals); the new client id differs only in its checkpoint suffix |
 | `/error` | terminal `error` `{"code":"internal_error","message":"fake error"}` |
 | anything else | `"echo: " + content[:200]`, streamed as `token` chunks of at most 16 chars |
 

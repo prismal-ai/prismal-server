@@ -12,17 +12,20 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import re
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 from prismal.events.agui import AgUiContext
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from prismal_server import openapi_examples as ex
@@ -30,6 +33,7 @@ from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import Lease, release_after
 from prismal_server.errors import is_budget_exceeded
 from prismal_server.streaming import (
+    INTERRUPT_FENCE_SEP,
     STREAM_PROTOCOL_HEADER,
     ChunkPump,
     DoneHook,
@@ -49,6 +53,7 @@ from prismal_server.usage.store import new_turn_id
 from prismal_server.usage.summary import TurnUsageProbe
 
 router = APIRouter(tags=["threads"])
+logger = logging.getLogger(__name__)
 
 
 # Shape of an org-scoped engine key prefix (`<len>:`). A single-tenant raw id
@@ -97,6 +102,113 @@ async def create_thread() -> dict[str, str]:
 
 Protocol = Literal["prismal", "ag-ui"]
 _AGUI_STREAM_MODES = ["messages", "updates", "custom"]
+
+
+class UnsupportedResume(Exception):
+    """422 ``unsupported_resume``: a ``cancelled`` entry (engine semantics pending)."""
+
+    def __init__(self) -> None:
+        super().__init__("cancelled resume entries are not supported yet")
+
+
+class NoPendingInterrupt(Exception):
+    """409 ``no_pending_interrupt``: the thread has nothing to resume."""
+
+    def __init__(self) -> None:
+        super().__init__("the thread has no pending interrupt to resume")
+
+
+class ResumeInProgress(Exception):
+    """409 ``resume_in_progress``: another resume of this thread is running."""
+
+    def __init__(self) -> None:
+        super().__init__("a resume of this thread is already in progress")
+
+
+class InvalidResume(Exception):
+    """422 ``invalid_resume``: ids are not exactly the pending interrupts."""
+
+    def __init__(self) -> None:
+        super().__init__("resume must answer exactly the pending interrupts")
+
+
+class ResumeEntry(BaseModel):
+    """An AG-UI 1.0 ``ResumeEntry`` (the payload is graph input, never read)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    interrupt_id: str = Field(alias="interruptId", min_length=1)
+    status: Literal["resolved", "cancelled"]
+    payload: Any = None
+
+
+async def _resume_input(
+    graph: Any,
+    config: dict[str, Any],
+    resume: list[ResumeEntry],
+    *,
+    claims: set[str],
+    lease: Lease,
+) -> Command[Any]:
+    """``Command(resume={id: payload})`` after checking the engine checkpoint.
+
+    The pending set comes only from the engine (``aget_state``); a retried
+    resume finds its interrupts consumed and is ``409`` (DESIGN §3.3). A
+    concurrent resume of the same engine thread is refused while the first
+    holds its claim, which is freed with the turn's runtime lease (in-process;
+    replicas need sticky routing per thread).
+    """
+    if any(entry.status == "cancelled" for entry in resume):
+        raise UnsupportedResume()
+    key = config["configurable"]["thread_id"]
+    if key in claims:  # check-and-add with no await between: atomic per loop
+        raise ResumeInProgress()
+    claims.add(key)
+    lease.on_release(lambda: claims.discard(key))
+    snapshot = await graph.aget_state(config)
+    pending = {intr.id for intr in getattr(snapshot, "interrupts", ())}
+    if not pending:
+        raise NoPendingInterrupt()
+    # Client ids are "<engine id>.<checkpoint_id>" (streaming._fence_interrupts):
+    # LangGraph reuses an id across one node's interrupts, so only the fence
+    # tells a retry apart from an answer to the node's next interrupt.
+    parsed = [entry.interrupt_id.rpartition(INTERRUPT_FENCE_SEP) for entry in resume]
+    if any(not sep or not engine_id for engine_id, sep, _ in parsed):
+        raise InvalidResume()
+    if any(fence != _checkpoint_id(snapshot) for _, _, fence in parsed):
+        raise NoPendingInterrupt()  # answered already: the run has moved on
+    ids = [engine_id for engine_id, _, _ in parsed]
+    if len(ids) != len(set(ids)) or set(ids) != pending:
+        raise InvalidResume()
+    return Command(
+        resume={
+            engine_id: e.payload
+            for (engine_id, _, _), e in zip(parsed, resume, strict=True)
+        }
+    )
+
+
+async def _finish_detached(
+    pump: ChunkPump, probe: TurnUsageProbe, record_usage: DoneHook
+) -> None:
+    """Wait for a resume's graph; record its usage if no stream did.
+
+    A client that disconnects mid-resume never sees ``done``, but the graph
+    still ran: its usage is recorded here (guarded to one record per turn).
+    """
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.shield(pump.task)
+    if pump.completed:
+        try:
+            await record_usage("stop", probe.usage())
+        except Exception:  # persistence must not break cleanup
+            logger.warning("usage record failed (detached resume)", exc_info=True)
+
+
+def _checkpoint_id(snapshot: Any) -> str | None:
+    configurable = (getattr(snapshot, "config", None) or {}).get("configurable", {})
+    value = configurable.get("checkpoint_id")
+    return value if isinstance(value, str) else None
 
 
 class ProtocolNotEnabled(Exception):
@@ -149,7 +261,9 @@ class Turn:
         run_id: str | None,
         heartbeat_s: float,
         span: TurnSpan | None = None,
+        fence: Callable[[], Awaitable[str | None]] | None = None,
     ) -> None:
+        self._fence = fence
         self.span = span
         self.lease = lease
         self.pump = pump
@@ -178,6 +292,7 @@ class Turn:
             summary_for=self._probe.summary,
             on_done=self._record_usage,
             span=self.span,
+            fence=self._fence,
         )
 
     def sse_body(self) -> AsyncIterator[str]:
@@ -197,6 +312,7 @@ class Turn:
             summary_for=self._probe.summary,
             on_done=self._record_usage,
             span=self.span,
+            fence=self._fence,
         )
 
     def _agui_context(self) -> AgUiContext:
@@ -218,10 +334,12 @@ class Turn:
         await self.lease.release()
 
     async def release(self) -> None:
-        """Response backstop: end the span and free the lease (idempotent)."""
-        if self.span is not None:
-            self.span.end()
-        await self.lease.release()
+        """Response backstop: end the span, stop the graph, free the lease.
+
+        Same as :meth:`aclose` (idempotent): the graph is cancelled before the
+        lease — and with it any resume claim — is released (RH3-02 review).
+        """
+        await self.aclose()
 
 
 async def open_turn(
@@ -235,6 +353,7 @@ async def open_turn(
     run_id: str | None = None,
     pump_maxsize: int = 0,
     span: TurnSpan | None = None,
+    resume: list[ResumeEntry] | None = None,
 ) -> Turn:
     """Start one chat turn for an already-resolved tenant (``state`` = app.state).
 
@@ -247,10 +366,15 @@ async def open_turn(
     engine_thread = engine_thread_id(org_id, thread_id)
     probe = TurnUsageProbe(engine_thread, state.run_summary)
 
+    recorded = False
+
     async def record_usage(finish_reason: str, usage: UsageWire | None) -> None:
         # SPEC-RH2-USE-001: one record per finished turn with non-null usage.
-        if usage is None:
+        # Also reached by a detached resume's finalizer: never twice per turn.
+        nonlocal recorded
+        if usage is None or recorded:
             return
+        recorded = True
         await store.append(
             UsageRecord(
                 org_id=org_id,
@@ -273,7 +397,7 @@ async def open_turn(
         ):
             raise ProtocolNotEnabled()  # SPEC-RH2-AGU-003: before streaming
         config = {"configurable": {"thread_id": engine_thread, "org_id": org_id}}
-        graph_input = {"messages": [{"role": role, "content": content}]}
+        graph_input: Any = {"messages": [{"role": role, "content": content}]}
         stream_mode: Any = _AGUI_STREAM_MODES if agui else "messages"
         # Only the per-turn graph and its pump task run under the turn span;
         # the runtime lease (which may build a runtime and start long-lived
@@ -282,10 +406,28 @@ async def open_turn(
             graph = await state.graph_factory(
                 tool_provider=getattr(lease.runtime, "tool_provider", None)
             )
+            if resume:  # AG-UI resume (RH3-02): the user content is not sent
+                graph_input = await _resume_input(
+                    graph,
+                    config,
+                    resume,
+                    claims=state.resume_claims,
+                    lease=lease,
+                )
             pump = ChunkPump(
                 graph.astream(graph_input, config, stream_mode=stream_mode),
                 maxsize=pump_maxsize,
+                # A resume never stops mid-node on disconnect (DESIGN §3.6).
+                detach_on_close=bool(resume),
             )
+            if resume:  # the lease (and resume claim) outlives the response
+                lease.hold_until(
+                    asyncio.create_task(_finish_detached(pump, probe, record_usage))
+                )
+
+        async def fence() -> str | None:
+            return _checkpoint_id(await graph.aget_state(config))
+
     except BaseException:
         await lease.release()
         raise
@@ -300,6 +442,7 @@ async def open_turn(
         run_id=run_id,
         heartbeat_s=settings.sse_heartbeat_s,
         span=span,
+        fence=fence if agui else None,
     )
 
 
@@ -311,6 +454,7 @@ async def run_turn(
     content: str | Callable[[], str],
     agui: bool,
     run_id: str | None = None,
+    resume: list[ResumeEntry] | None = None,
 ) -> StreamingResponse:
     """Run one chat turn over HTTP and stream it natively or as AG-UI.
 
@@ -335,7 +479,9 @@ async def run_turn(
     try:
         org_id = resolve_org_id(request, identity)
         span.set_tenant(org_id, conversation_id(org_id, thread_id))
-        text = content() if callable(content) else content
+        if resume:
+            span.set_resume(len(resume))
+        text = "" if resume else content() if callable(content) else content
         turn = await open_turn(  # starts the pump task under the span
             state,
             org_id=org_id,
@@ -345,6 +491,7 @@ async def run_turn(
             agui=agui,
             run_id=run_id,
             span=span,
+            resume=resume,
         )
     except BaseException as exc:
         fail_span(span, exc)

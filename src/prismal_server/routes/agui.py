@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from prismal_server import openapi_examples as ex
-from prismal_server.routes.threads import run_turn
+from prismal_server.routes.threads import ResumeEntry, run_turn
 
 router = APIRouter(prefix="/v1", tags=["ag-ui"])
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ class RunAgentInput(BaseModel):
     run_id: str | None = Field(default=None, alias="runId")
     messages: list[dict[str, Any]] = []
     tools: list[dict[str, Any]] = []
+    # AG-UI 1.0 interrupt resume (RH3-02); non-empty ⇒ ``messages`` is not read.
+    resume: list[ResumeEntry] = []
 
 
 def _text(content: Any) -> str:
@@ -78,4 +80,5 @@ async def run_agent(body: RunAgentInput, request: Request) -> StreamingResponse:
         content=lambda: last_user_text(body.messages),
         agui=True,
         run_id=body.run_id,
+        resume=body.resume or None,
     )

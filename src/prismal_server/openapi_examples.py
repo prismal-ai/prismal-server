@@ -78,6 +78,7 @@ _DESCRIPTIONS = {
     403: "Forbidden",
     404: "Not found / disabled",
     406: "Stream protocol not enabled",
+    409: "Nothing to resume",
     422: "Invalid input",
 }
 
@@ -159,7 +160,23 @@ AGUI = responses(
     "text/event-stream",
     e402=BUDGET_EXCEEDED,
     e406=PROTOCOL_NOT_ENABLED,
-    e422={"invalid_input": error("invalid_input", "no user message text")},
+    e409={
+        "no_pending_interrupt": error(
+            "no_pending_interrupt", "the thread has no pending interrupt to resume"
+        ),
+        "resume_in_progress": error(
+            "resume_in_progress", "a resume of this thread is already in progress"
+        ),
+    },
+    e422={
+        "invalid_input": error("invalid_input", "no user message text"),
+        "invalid_resume": error(
+            "invalid_resume", "resume must answer exactly the pending interrupts"
+        ),
+        "unsupported_resume": error(
+            "unsupported_resume", "cancelled resume entries are not supported yet"
+        ),
+    },
 )
 
 # ── usage & budget (SPEC §4) ─────────────────────────────────────────────────

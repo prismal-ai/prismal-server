@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -115,6 +115,9 @@ class TenantInfo:
     last_used_at: datetime | None = None
 
 
+_BACKGROUND: set[asyncio.Task[None]] = set()
+
+
 class Lease:
     """A turn's hold on a tenant runtime; ``release()`` exactly once (idempotent)."""
 
@@ -122,11 +125,37 @@ class Lease:
         self._registry = registry
         self._entry: _Entry | None = entry
         self.runtime: Any = entry.runtime
+        self._on_release: list[Callable[[], None]] = []
+        self._holds: list[asyncio.Task[Any]] = []
+
+    def on_release(self, hook: Callable[[], None]) -> None:
+        """Run ``hook`` once when the lease is released (turn-scoped claims)."""
+        self._on_release.append(hook)
+
+    def hold_until(self, task: asyncio.Task[Any]) -> None:
+        """Defer the real release until ``task`` is done (a detached resume run)."""
+        self._holds.append(task)
 
     async def release(self) -> None:
+        pending = [t for t in self._holds if not t.done()]
+        if pending:
+            # Released again (idempotently) once the last held task finishes.
+            for task in pending:
+                task.add_done_callback(self._release_when_held_done)
+            return
         entry, self._entry = self._entry, None
         if entry is not None:
+            hooks, self._on_release = self._on_release, []
+            for hook in hooks:
+                hook()
             await self._registry._release(entry)
+
+    def _release_when_held_done(self, _: asyncio.Task[Any]) -> None:
+        if self._entry is None or any(not t.done() for t in self._holds):
+            return
+        task = asyncio.get_running_loop().create_task(self.release())
+        _BACKGROUND.add(task)  # keep a strong ref until it runs
+        task.add_done_callback(_BACKGROUND.discard)
 
 
 async def release_after[T](lease: Lease, stream: AsyncIterator[T]) -> AsyncIterator[T]:

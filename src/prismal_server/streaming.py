@@ -102,12 +102,28 @@ class ChunkPump:
     :meth:`prime` can look at the first item before any response is sent.
     """
 
-    def __init__(self, chunks: AsyncIterator[Any], *, maxsize: int = 0) -> None:
+    def __init__(
+        self,
+        chunks: AsyncIterator[Any],
+        *,
+        maxsize: int = 0,
+        detach_on_close: bool = False,
+    ) -> None:
         # ``maxsize`` > 0 bounds the buffer, so a slow consumer (a WebSocket
         # client) pauses the graph instead of growing memory.
         self._queue: asyncio.Queue[PumpItem] = asyncio.Queue(maxsize=maxsize)
         self._head: PumpItem | None = None
+        # A resume run (RH3-02) must not be cut mid-node by a disconnect: on
+        # close the graph runs to completion and its output is discarded.
+        self._detach_on_close = detach_on_close
+        self._drain: asyncio.Task[None] | None = None
+        self.completed = False  # the graph stream reached its normal end
         self._task = asyncio.create_task(self._produce(chunks))
+
+    @property
+    def task(self) -> asyncio.Task[None]:
+        """The producer task: done when the graph stream has finished."""
+        return self._task
 
     async def _produce(self, chunks: AsyncIterator[Any]) -> None:
         try:
@@ -118,6 +134,7 @@ class ChunkPump:
         except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
             await self._queue.put(("error", exc))
         else:
+            self.completed = True
             await self._queue.put(("end", None))
 
     async def prime(self, wait_s: float) -> PumpItem | None:
@@ -137,10 +154,23 @@ class ChunkPump:
         return await asyncio.wait_for(self._queue.get(), timeout=wait_s)
 
     async def aclose(self) -> None:
-        """Cancel the producer, closing the underlying graph stream."""
+        """Cancel the producer, closing the underlying graph stream.
+
+        With ``detach_on_close`` the graph is left to finish instead; its
+        remaining output is drained (so a bounded buffer never blocks it).
+        """
+        if self._detach_on_close and not self._task.done():
+            if self._drain is None:
+                self._drain = asyncio.create_task(self._discard())
+            return
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._task
+
+    async def _discard(self) -> None:
+        while not self._task.done() or not self._queue.empty():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._queue.get(), timeout=0.5)
 
 
 def _safe_usage(usage_for: UsageProvider | None) -> UsageWire | None:
@@ -282,6 +312,31 @@ def _usage_of(summary: Any) -> UsageWire | None:
         return None
 
 
+INTERRUPT_FENCE_SEP = "."
+
+
+async def _fence_interrupts(
+    ctx: AgUiContext, fence: Callable[[], Awaitable[str | None]]
+) -> None:
+    """Suffix each interrupt id with the checkpoint it was raised at.
+
+    LangGraph reuses one id for every ``interrupt()`` of a node invocation, so
+    a retried resume could otherwise answer the node's *next* interrupt
+    (RH3-02 review C1). ``"<engine id>.<checkpoint_id>"`` is opaque to the
+    client and checked against the live checkpoint on resume. Fail-open: on a
+    lookup error the ids stay unfenced (such interrupts cannot be resumed).
+    """
+    try:
+        checkpoint_id = await fence()
+    except Exception:
+        logger.warning("interrupt fence lookup failed", exc_info=True)
+        return
+    if not checkpoint_id:
+        return
+    for entry in ctx.interrupts:
+        entry["id"] = f"{entry['id']}{INTERRUPT_FENCE_SEP}{checkpoint_id}"
+
+
 def _safe_summary(summary_for: SummaryProvider) -> Any:
     try:
         return summary_for()
@@ -301,6 +356,7 @@ async def agui_events(
     summary_for: SummaryProvider,
     on_done: DoneHook | None = None,
     span: TurnSpan | None = None,
+    fence: Callable[[], Awaitable[str | None]] | None = None,
 ) -> AsyncGenerator[Any]:
     """A turn's engine AG-UI events, transport-free; ``None`` marks a heartbeat.
 
@@ -343,6 +399,8 @@ async def agui_events(
             else:  # "end"
                 break
 
+        if ctx.interrupts and fence is not None:
+            await _fence_interrupts(ctx, fence)
         summary = _safe_summary(summary_for)
         usage = _usage_of(summary)
         if usage is None:
@@ -378,6 +436,7 @@ async def agui_stream(
     summary_for: SummaryProvider,
     on_done: DoneHook | None = None,
     span: TurnSpan | None = None,
+    fence: Callable[[], Awaitable[str | None]] | None = None,
 ) -> AsyncIterator[str]:
     """:func:`agui_events` as data-only SSE frames plus heartbeat comments."""
     events = agui_events(
@@ -390,6 +449,7 @@ async def agui_stream(
         summary_for=summary_for,
         on_done=on_done,
         span=span,
+        fence=fence,
     )
     async with contextlib.aclosing(events):
         async for event in events:

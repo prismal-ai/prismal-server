@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from prismal_server.fake.graph import (
     FAKE_USAGE,
+    FakeCheckpoint,
     FakeGraph,
     FakeScriptError,
     FakeSummaries,
@@ -27,6 +28,7 @@ from prismal_server.fake.middleware import FAKE_HEADER, FakeHeaderMiddleware
 __all__ = [
     "FAKE_HEADER",
     "FAKE_USAGE",
+    "FakeCheckpoint",
     "FakeGraph",
     "FakeHeaderMiddleware",
     "FakeScriptError",

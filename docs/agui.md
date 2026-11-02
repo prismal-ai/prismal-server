@@ -40,7 +40,57 @@ curl -N -X POST localhost:8000/v1/agui -H 'content-type: application/json' -d '{
 Only the **last `user` message's text** becomes the turn input. History lives in
 the engine checkpoint and is not replayed. Text parts of `InputContent[]` are
 joined; a request with no user text is `422 invalid_input`. Client `tools` are
-ignored (and logged) in 0.2.
+ignored (and logged); see [Interrupts and resume](#interrupts-and-resume).
+
+## Interrupts and resume
+
+When the agent pauses (a LangGraph `interrupt()`, such as an engine approval gate),
+the run ends with `RUN_FINISHED.outcome = {"type": "interrupt", "interrupts": [...]}`.
+Each interrupt has an `id`, a `reason`, and an optional `message` / `toolCallId` /
+`metadata`. AG-UI 1.0 has no separate INTERRUPT event.
+
+To continue, send another `RunAgentInput` on the same thread with `resume`: one
+`ResumeEntry` per open interrupt. This is what `@ag-ui/client`'s `buildResumeArray`
+produces.
+
+```bash
+curl -N -X POST localhost:8000/v1/agui -H 'content-type: application/json' -d '{
+  "threadId":"t-42","runId":"r-2","messages":[],
+  "resume":[{"interruptId":"<id from outcome>","status":"resolved","payload":{"action":"approve"}}],
+  "tools":[],"context":[],"state":{},"forwardedProps":{}}'
+```
+
+- When `resume` is non-empty, `messages` is not read. Each `payload` goes to the
+  engine unchanged as `Command(resume={interruptId: payload})`. The host never
+  interprets it.
+- The resumed run streams like any run: usage, `RUN_FINISHED` (`success`, or
+  `interrupt` again), and a usage record.
+- Interrupt ids are **opaque**: `"<engine id>.<checkpoint_id>"`. Send them back
+  exactly as received. The suffix ties an answer to the checkpoint it was asked at, so
+  a retried answer can never approve the *next* prompt of the same step.
+- **A resume is not cancelled when the client disconnects.** The approved step runs to
+  completion in the background, and its output is discarded. Reconnect and inspect the
+  thread instead of re-sending. A re-sent resume gets `409` (`resume_in_progress`
+  while the step runs, then `no_pending_interrupt`). Plain runs are still cancelled on
+  disconnect.
+- Refusals, all before streaming:
+
+  | Code | When |
+  |---|---|
+  | `409 no_pending_interrupt` | Nothing to resume, or the interrupt was already answered (stale checkpoint suffix). A **retried** resume gets this, so a retry never resumes twice |
+  | `409 resume_in_progress` | Another resume of this thread is still running. The guard is per process, so with several replicas route each thread to one replica |
+  | `422 invalid_resume` | The ids are not exactly the open interrupts (unknown, missing, duplicate, or missing the checkpoint suffix) |
+  | `422 unsupported_resume` | A `cancelled` entry. Cancel semantics are still to be defined by the engine |
+
+- Pending interrupts are read from the engine checkpoint, and they are org-scoped like
+  the thread.
+- Traces mark resume runs with `prismal.agui.resume` and `prismal.agui.resume_count`.
+
+A recorded run (interrupt → resume, fake mode) is published at
+[`fixtures/agui/interrupt-resume.json`](../fixtures/agui/interrupt-resume.json) for
+clients to replay. Client-declared **frontend tools** need engine support first (see
+[`specs/host-v0.3-agui-resume/ENGINE-PROMPT.md`](../specs/host-v0.3-agui-resume/ENGINE-PROMPT.md)).
+Until then they are ignored and logged.
 
 ## Wire format
 
