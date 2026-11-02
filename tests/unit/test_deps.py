@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from prismal_server.config import HostSettings
 from prismal_server.deps import RuntimeRegistry
@@ -25,7 +26,7 @@ class FakeRuntime:
 def make_registry(*, settings: HostSettings | None = None, **kw):  # type: ignore[no-untyped-def]
     calls: list[str | None] = []
 
-    async def builder(*, org_id: str | None):  # type: ignore[no-untyped-def]
+    async def builder(*, org_id: str | None, config_source: Any = None):  # type: ignore[no-untyped-def]
         calls.append(org_id)
         await asyncio.sleep(0)  # yield, so concurrent callers can interleave
         return FakeRuntime(org_id, **kw)

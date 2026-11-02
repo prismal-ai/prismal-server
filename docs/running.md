@@ -1,7 +1,7 @@
 # Running prismal-server
 
 The host is a single stateless ASGI process. It boots the engine once per tenant
-(lazily) and serves it over REST/SSE + inbound A2A.
+(lazily) and serves it over REST/SSE (plus opt-in WebSocket) and inbound A2A.
 
 ## Local (uv)
 
@@ -52,6 +52,17 @@ Host-only settings use the `PRISMAL_SERVER_` prefix (pydantic-settings; a local
 | `PRISMAL_SERVER_HOST_MAX_TENANTS` | `32` | Live tenant-runtime cap (LRU) — see [tenancy](./tenancy.md) |
 | `PRISMAL_SERVER_A2A_ENABLED` | `true` | Gate the A2A routes (404 when off) — see [a2a](./a2a.md) |
 | `PRISMAL_SERVER_DEV_IDENTITY_DID` | `did:key:zLocalDev` | `NoAuthBackend` identity DID |
+| `PRISMAL_SERVER_HOST_ENVIRONMENT` | `development` | `development` \| `staging` \| `production` |
+| `PRISMAL_SERVER_HOST_TENANT_CONFIG_DIR` | unset | Per-tenant `tenant.yaml` root — see [tenancy](./tenancy.md) |
+| `PRISMAL_SERVER_HOST_SECRETS_BACKEND` / `_HOST_SECRETS_DIR` | `file` / unset | Tenant secrets (`file` \| `env`) |
+| `PRISMAL_SERVER_HOST_USAGE_STORE` / `_HOST_USAGE_DB_PATH` / `_HOST_USAGE_RETENTION_DAYS` | `memory` / `usage.db` / `90` | Usage persistence — see [usage](./usage.md) |
+| `PRISMAL_SERVER_HOST_AGUI_ENABLED` | `true` | Host AG-UI gate (engine flag also required) — see [agui](./agui.md) |
+| `PRISMAL_SERVER_HOST_WS_ENABLED` / `_HOST_WS_MAX_MESSAGE_BYTES` | `false` / `1048576` | WebSocket — see [websocket](./websocket.md) |
+| `PRISMAL_SERVER_HOST_FAKE_LLM_MODE` | `false` | Deterministic fake runtime — see [fake-mode](./fake-mode.md) |
+| `PRISMAL_SERVER_HOST_ADMIN_ENABLED` / `_HOST_ADMIN_SCOPE` | `false` / `prismal:admin` | Admin endpoints — see [admin](./admin.md) |
+| `PRISMAL_SERVER_HOST_OTEL_ENABLED` / `_HOST_OTEL_ENDPOINT` | `false` / `http://localhost:4318` | Per-request OTLP traces — see [tracing](./tracing.md) |
+| `PRISMAL_SERVER_HOST_OTEL_HEADERS` | `{}` | OTLP export headers (JSON, secret values), e.g. `{"X-Agentlens-Key":"…"}` |
+| `PRISMAL_SERVER_HOST_OTEL_SERVICE_NAME` / `_HOST_OTEL_AGENT_NAME` | `prismal-server` / `prismal` | Resource `service.name` / span `gen_ai.agent.name` |
 
 ## Health & readiness
 

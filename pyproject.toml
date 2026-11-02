@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prismal-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference host for the prismal agent engine — a thin FastAPI/ASGI process serving prismal over REST/SSE and inbound A2A."
 readme = "README.md"
 # The engine (prismal-ai) requires Python >=3.13, so the host does too.
@@ -24,11 +24,20 @@ classifiers = [
 # The engine. PyPI distribution is `prismal-ai`; the import module is `prismal`.
 # Pinned per SPEC-RHB-NFR-004: the host couples only to the four engine seams.
 dependencies = [
-    "prismal-ai>=3.10.2,<4",
+    "prismal-ai>=3.17,<4",
+    # Host-owned per-request traces (RH3-01); already resolved via the engine.
+    "opentelemetry-sdk>=1.43,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.43,<2",
+    # Command/Interrupt for AG-UI resume (RH3-02); already resolved via the engine.
+    "langgraph>=1.0,<2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.10",
     "pydantic-settings>=2.5",
+    # Per-tenant `tenant.yaml` (RH2-01-03); parsed with `yaml.safe_load` only.
+    "pyyaml>=6.0",
+    # SQLite usage store (RH2-02-03, host_usage_store="sqlite").
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +47,7 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [project.urls]
@@ -84,6 +94,10 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+filterwarnings = [
+    # Starlette's TestClient (WebSocket tests) still runs on httpx.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 markers = [
     "contract: opt-in smoke tests against a released prismal engine (deselected by default)",
 ]

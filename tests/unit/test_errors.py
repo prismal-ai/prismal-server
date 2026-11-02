@@ -45,7 +45,7 @@ class A2AAgentUnavailable(PrismalError): ...
         (RuntimeCompositionError("no vector store"), 503, "runtime_composition_error"),
         (PolicyDenied("nope"), 403, "policy_denied"),
         (PermissionDeniedError("nope"), 403, "permission_denied"),
-        (BudgetExceeded("too much"), 429, "budget_exceeded"),
+        (BudgetExceeded("too much"), 402, "budget_exceeded"),  # SPEC-RH2 §11
         (A2AAgentUnavailable("down"), 502, "a2a_agent_unavailable"),
     ],
 )
@@ -103,3 +103,21 @@ async def test_handler_opaque_500_does_not_leak_detail() -> None:
     body = resp.json()
     assert body["error"]["code"] == "internal_error"
     assert "secret" not in body["error"]["message"]
+
+
+class EngineBudgetExceeded(PrismalError):
+    """Shape of prismal.core.exceptions.BudgetExceeded (dimension/used/limit/scope)."""
+
+    def __init__(self) -> None:
+        self.dimension, self.used, self.limit, self.scope = "cost", 50.2, 50.0, "tenant"
+        super().__init__("Budget exceeded on cost (tenant): 50.2 >= 50.0")
+
+
+EngineBudgetExceeded.__name__ = "BudgetExceeded"
+
+
+def test_budget_exceeded_carries_scope_limit_consumed() -> None:
+    """SPEC-RH2 §11: 402 with scope/limit/consumed."""
+    mapped = map_exception(EngineBudgetExceeded())
+    assert mapped.status_code == 402
+    assert mapped.extra == {"scope": "tenant", "limit": 50.0, "consumed": 50.2}

@@ -5,6 +5,12 @@ Turns a graph ``astream(...)`` async iterator into an SSE byte stream: named
 terminal ``done`` (or ``error``) event, and prompt cancellation of the
 underlying graph work when the client disconnects (SPEC-RHB-CHT-002/003/004/006).
 
+v0.2: ``done`` carries the engine's 12-key ``usage`` (or ``null``, fail-open —
+SPEC-RH2-USG-001); a mid-stream ``BudgetExceeded`` becomes a terminal ``error``
+with ``scope``/``limit``/``consumed`` and the partial ``usage`` (SPEC-RH2 §11).
+:class:`ChunkPump` lets the route peek the first item, so a budget refusal
+before the first token is answered as HTTP 402 instead of a stream.
+
 Chunks are translated by duck typing — the host never imports langchain message
 types; it reads ``.content`` and ``.tool_call_chunks`` off whatever the graph
 yields.
@@ -15,10 +21,35 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable, Iterable
-from typing import Any
+import logging
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+)
+from typing import TYPE_CHECKING, Any
 
+from prismal.events.agui import (
+    AgUiContext,
+    error_run,
+    finish_run,
+    start_run,
+    to_agui_events,
+)
+
+from prismal_server import metrics
 from prismal_server.errors import map_exception
+from prismal_server.usage.models import UsageWire
+
+if TYPE_CHECKING:
+    from prismal_server.tracing import TurnSpan
+
+logger = logging.getLogger(__name__)
+
+# Response header naming the stream protocol in AG-UI mode (SPEC-RH2-AGU-002).
+STREAM_PROTOCOL_HEADER = "X-Prismal-Stream-Protocol"
 
 # A translated SSE event: (event name, JSON-serializable payload).
 SSEEvent = tuple[str, dict[str, Any]]
@@ -58,56 +89,368 @@ def default_translate(chunk: Any) -> list[SSEEvent]:
     return events
 
 
-async def sse_stream(
-    chunks: AsyncIterator[Any],
+# Queue items: ("chunk", chunk) | ("error", exc) | ("end", None).
+PumpItem = tuple[str, Any]
+UsageProvider = Callable[[], UsageWire | None]
+DoneHook = Callable[[str, UsageWire | None], Awaitable[None]]
+
+
+class ChunkPump:
+    """Drains a graph ``astream`` iterator into a queue on a background task.
+
+    The heartbeat timer then never cancels an in-flight graph step, and
+    :meth:`prime` can look at the first item before any response is sent.
+    """
+
+    def __init__(
+        self,
+        chunks: AsyncIterator[Any],
+        *,
+        maxsize: int = 0,
+        detach_on_close: bool = False,
+    ) -> None:
+        # ``maxsize`` > 0 bounds the buffer, so a slow consumer (a WebSocket
+        # client) pauses the graph instead of growing memory.
+        self._queue: asyncio.Queue[PumpItem] = asyncio.Queue(maxsize=maxsize)
+        self._head: PumpItem | None = None
+        # A resume run (RH3-02) must not be cut mid-node by a disconnect: on
+        # close the graph runs to completion and its output is discarded.
+        self._detach_on_close = detach_on_close
+        self._drain: asyncio.Task[None] | None = None
+        self.completed = False  # the graph stream reached its normal end
+        self._task = asyncio.create_task(self._produce(chunks))
+
+    @property
+    def task(self) -> asyncio.Task[None]:
+        """The producer task: done when the graph stream has finished."""
+        return self._task
+
+    async def _produce(self, chunks: AsyncIterator[Any]) -> None:
+        try:
+            async for chunk in chunks:
+                await self._queue.put(("chunk", chunk))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
+            await self._queue.put(("error", exc))
+        else:
+            self.completed = True
+            await self._queue.put(("end", None))
+
+    async def prime(self, wait_s: float) -> PumpItem | None:
+        """Wait up to ``wait_s`` for the first item and keep it for :meth:`get`."""
+        if self._head is None:
+            try:
+                self._head = await asyncio.wait_for(self._queue.get(), timeout=wait_s)
+            except TimeoutError:
+                return None
+        return self._head
+
+    async def get(self, wait_s: float) -> PumpItem:
+        """Next item; raises ``TimeoutError`` after ``wait_s`` (heartbeat)."""
+        if self._head is not None:
+            item, self._head = self._head, None
+            return item
+        return await asyncio.wait_for(self._queue.get(), timeout=wait_s)
+
+    async def aclose(self) -> None:
+        """Cancel the producer, closing the underlying graph stream.
+
+        With ``detach_on_close`` the graph is left to finish instead; its
+        remaining output is drained (so a bounded buffer never blocks it).
+        """
+        if self._detach_on_close and not self._task.done():
+            if self._drain is None:
+                self._drain = asyncio.create_task(self._discard())
+            return
+        self._task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._task
+
+    async def _discard(self) -> None:
+        while not self._task.done() or not self._queue.empty():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._queue.get(), timeout=0.5)
+
+
+def _safe_usage(usage_for: UsageProvider | None) -> UsageWire | None:
+    if usage_for is None:
+        return None
+    try:
+        return usage_for()
+    except Exception:  # telemetry is fail-open (DD-RH2-002)
+        logger.warning("usage lookup failed", exc_info=True)
+        return None
+
+
+async def native_events(
+    chunks: AsyncIterator[Any] | ChunkPump,
     *,
     thread_id: str,
     heartbeat_s: float = 15.0,
     translate: Callable[[Any], Iterable[SSEEvent]] = default_translate,
-) -> AsyncIterator[str]:
-    """Bridge a graph ``astream`` iterator to SSE frames.
+    usage_for: UsageProvider | None = None,
+    on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
+) -> AsyncGenerator[SSEEvent | None]:
+    """A turn's native events, transport-free; ``None`` marks an idle heartbeat.
 
-    A background producer drains ``chunks`` into a queue so the heartbeat timer
-    never cancels an in-flight graph step. On client disconnect the outer
-    generator is closed, and the ``finally`` cancels the producer — which closes
-    the underlying graph stream (SPEC-RHB-CHT-004).
+    Shared by SSE and WebSocket so both carry identical event names and
+    payloads (DD-RH2-007). Closing the generator cancels the producer — which
+    closes the graph stream (SPEC-RHB-CHT-004).
     """
-    queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-
-    async def producer() -> None:
-        try:
-            async for chunk in chunks:
-                await queue.put(("chunk", chunk))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
-            await queue.put(("error", exc))
-        else:
-            await queue.put(("end", None))
-
-    task = asyncio.create_task(producer())
+    pump = chunks if isinstance(chunks, ChunkPump) else ChunkPump(chunks)
     try:
         while True:
             try:
-                kind, value = await asyncio.wait_for(queue.get(), timeout=heartbeat_s)
+                kind, value = await pump.get(wait_s=heartbeat_s)
             except TimeoutError:
-                yield sse_comment("heartbeat")
+                yield None
                 continue
 
             if kind == "chunk":
-                for event, payload in translate(value):
-                    yield sse_event(event, payload)
+                for event in translate(value):
+                    yield event
             elif kind == "error":
                 mapped = map_exception(value)
-                yield sse_event(
-                    "error", {"code": mapped.code, "message": mapped.message}
-                )
+                error: dict[str, Any] = {
+                    "code": mapped.code,
+                    "message": mapped.message,
+                    **mapped.extra,
+                }
+                if mapped.code == "budget_exceeded":
+                    partial = _safe_usage(usage_for)
+                    error["usage"] = partial.model_dump() if partial else None
+                    if span is not None:
+                        span.record_usage(partial)
+                if span is not None:
+                    span.fail(mapped.code)
+                yield ("error", error)
                 return
             else:  # "end"
                 break
 
-        yield sse_event("done", {"thread_id": thread_id, "finish_reason": "stop"})
+        finish_reason = "stop"
+        usage = _safe_usage(usage_for)
+        if usage is None:
+            metrics.increment("usage_missing_total")
+        if span is not None:
+            span.record_usage(usage)
+            span.complete(finish_reason)
+        if on_done is not None:
+            try:
+                await on_done(finish_reason, usage)
+            except Exception:  # persistence must not break the stream
+                logger.warning(
+                    "usage record failed for thread_id=%s", thread_id, exc_info=True
+                )
+        yield (
+            "done",
+            {
+                "thread_id": thread_id,
+                "finish_reason": finish_reason,
+                "usage": usage.model_dump() if usage else None,
+            },
+        )
+    except Exception as exc:  # a host-side failure is an error, not a cancel
+        if span is not None:
+            span.fail(map_exception(exc).code)
+        raise
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if span is not None:
+            span.end()
+        await pump.aclose()
+
+
+async def sse_stream(
+    chunks: AsyncIterator[Any] | ChunkPump,
+    *,
+    thread_id: str,
+    heartbeat_s: float = 15.0,
+    translate: Callable[[Any], Iterable[SSEEvent]] = default_translate,
+    usage_for: UsageProvider | None = None,
+    on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
+) -> AsyncIterator[str]:
+    """Bridge a graph ``astream`` iterator (or a primed pump) to SSE frames.
+
+    On client disconnect this generator is closed, which closes
+    :func:`native_events` and so the graph stream (SPEC-RHB-CHT-004).
+    """
+    events = native_events(
+        chunks,
+        thread_id=thread_id,
+        heartbeat_s=heartbeat_s,
+        translate=translate,
+        usage_for=usage_for,
+        on_done=on_done,
+        span=span,
+    )
+    async with contextlib.aclosing(events):
+        async for event in events:
+            if event is None:
+                yield sse_comment("heartbeat")
+            else:
+                yield sse_event(*event)
+
+
+def agui_frame(event: Any) -> str:
+    """One AG-UI event as a data-only SSE frame (no ``event:`` line, AGU-002)."""
+    return f"data: {json.dumps(event.to_wire(), separators=(',', ':'))}\n\n"
+
+
+SummaryProvider = Callable[[], Any]
+
+
+def _usage_of(summary: Any) -> UsageWire | None:
+    if summary is None:
+        return None
+    try:
+        return UsageWire.model_validate(summary.to_usage_wire())
+    except Exception:
+        logger.warning("engine usage wire rejected", exc_info=True)
+        return None
+
+
+INTERRUPT_FENCE_SEP = "."
+
+
+async def _fence_interrupts(
+    ctx: AgUiContext, fence: Callable[[], Awaitable[str | None]]
+) -> None:
+    """Suffix each interrupt id with the checkpoint it was raised at.
+
+    LangGraph reuses one id for every ``interrupt()`` of a node invocation, so
+    a retried resume could otherwise answer the node's *next* interrupt
+    (RH3-02 review C1). ``"<engine id>.<checkpoint_id>"`` is opaque to the
+    client and checked against the live checkpoint on resume. Fail-open: on a
+    lookup error the ids stay unfenced (such interrupts cannot be resumed).
+    """
+    try:
+        checkpoint_id = await fence()
+    except Exception:
+        logger.warning("interrupt fence lookup failed", exc_info=True)
+        return
+    if not checkpoint_id:
+        return
+    for entry in ctx.interrupts:
+        entry["id"] = f"{entry['id']}{INTERRUPT_FENCE_SEP}{checkpoint_id}"
+
+
+def _safe_summary(summary_for: SummaryProvider) -> Any:
+    try:
+        return summary_for()
+    except Exception:  # telemetry is fail-open (DD-RH2-002)
+        logger.warning("run summary lookup failed", exc_info=True)
+        return None
+
+
+async def agui_events(
+    chunks: AsyncIterator[Any] | ChunkPump,
+    *,
+    ctx: AgUiContext,
+    heartbeat_s: float = 15.0,
+    initial_state: Any = None,
+    run_input: Any = None,
+    result: Any = None,
+    summary_for: SummaryProvider,
+    on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
+    fence: Callable[[], Awaitable[str | None]] | None = None,
+) -> AsyncGenerator[Any]:
+    """A turn's engine AG-UI events, transport-free; ``None`` marks a heartbeat.
+
+    Bridges ``astream(stream_mode=["messages","updates","custom"])`` to AG-UI.
+
+    Every AG-UI event comes from the engine (``start_run`` / ``to_agui_events``
+    / ``finish_run`` / ``error_run``, SPEC-RH2-AGU-001); the host only frames
+    them, interleaves heartbeat comments and records usage. A mid-stream
+    failure is ``error_run`` with the same ``code``/``message`` as the native
+    ``error`` event (AGU-004); usage arrives as ``CUSTOM prismal.usage`` before
+    ``RUN_FINISHED``, produced by ``finish_run(summary=…)``.
+    """
+    pump = chunks if isinstance(chunks, ChunkPump) else ChunkPump(chunks)
+    metrics.increment("agui_streams_total")
+    try:
+        for event in start_run(ctx, initial_state=initial_state, input=run_input):
+            yield event
+        while True:
+            try:
+                kind, value = await pump.get(wait_s=heartbeat_s)
+            except TimeoutError:
+                yield None
+                continue
+
+            if kind == "chunk":
+                for event in to_agui_events(value, ctx):
+                    yield event
+            elif kind == "error":
+                mapped = map_exception(value)
+                summary = _safe_summary(summary_for)
+                if span is not None:
+                    if mapped.code == "budget_exceeded":
+                        span.record_usage(_usage_of(summary))
+                    span.fail(mapped.code)
+                for event in error_run(
+                    ctx, code=mapped.code, message=mapped.message, summary=summary
+                ):
+                    yield event
+                return
+            else:  # "end"
+                break
+
+        if ctx.interrupts and fence is not None:
+            await _fence_interrupts(ctx, fence)
+        summary = _safe_summary(summary_for)
+        usage = _usage_of(summary)
+        if usage is None:
+            metrics.increment("usage_missing_total")
+        if span is not None:
+            span.record_usage(usage)
+            span.complete("stop")
+        if on_done is not None:
+            try:
+                await on_done("stop", usage)
+            except Exception:  # persistence must not break the stream
+                logger.warning("usage record failed (ag-ui)", exc_info=True)
+        for event in finish_run(ctx, summary=summary, result=result):
+            yield event
+    except Exception as exc:  # a host-side failure is an error, not a cancel
+        if span is not None:
+            span.fail(map_exception(exc).code)
+        raise
+    finally:
+        if span is not None:
+            span.end()
+        await pump.aclose()
+
+
+async def agui_stream(
+    chunks: AsyncIterator[Any] | ChunkPump,
+    *,
+    ctx: AgUiContext,
+    heartbeat_s: float = 15.0,
+    initial_state: Any = None,
+    run_input: Any = None,
+    result: Any = None,
+    summary_for: SummaryProvider,
+    on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
+    fence: Callable[[], Awaitable[str | None]] | None = None,
+) -> AsyncIterator[str]:
+    """:func:`agui_events` as data-only SSE frames plus heartbeat comments."""
+    events = agui_events(
+        chunks,
+        ctx=ctx,
+        heartbeat_s=heartbeat_s,
+        initial_state=initial_state,
+        run_input=run_input,
+        result=result,
+        summary_for=summary_for,
+        on_done=on_done,
+        span=span,
+        fence=fence,
+    )
+    async with contextlib.aclosing(events):
+        async for event in events:
+            yield sse_comment("heartbeat") if event is None else agui_frame(event)

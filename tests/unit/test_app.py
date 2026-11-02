@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import FastAPI
 
 from prismal_server.app import create_app
@@ -21,7 +23,7 @@ class SpyRuntime:
 def _spy_registry() -> tuple[RuntimeRegistry, list[SpyRuntime]]:
     built: list[SpyRuntime] = []
 
-    async def builder(*, org_id: str | None):  # type: ignore[no-untyped-def]
+    async def builder(*, org_id: str | None, config_source: Any = None):  # type: ignore[no-untyped-def]
         rt = SpyRuntime(org_id)
         built.append(rt)
         return rt

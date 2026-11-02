@@ -1,0 +1,318 @@
+# prismal-server — Task Breakdown (Host v0.2: Usage, Gateways, AG-UI)
+
+| Field | Value |
+|---|---|
+| **Status** | `READY` |
+| **Version** | 1.0 |
+| **Date** | 2026-10-04 |
+| **Author** | Ernesto Crespo |
+| **Companion** | [`PLAN.md`](./PLAN.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`SPEC.md`](./SPEC.md) |
+
+Status legend: `TODO` · `WIP` · `DONE` · `BLOCKED`. Every task is test-first (TDD). Tasks map to
+`SPEC-RH2-*` IDs (prefix omitted in the SPEC column).
+
+## Prerequisites — verify before build
+
+Engine `prismal-ai` 3.17.0 released with TKE1, GW, PRT (PRT5 usage wire + AG-UI translator, PRT2
+dual-stack handler) and **HRS** (`prismal/specs/composition-root/DELTA-2026-10-host-read-surface.md`,
+the engine-owned host read surface). Every **[verify]** item is closed by an RH2-00 task — see [`VERIFY-RH2-00.md`](./VERIFY-RH2-00.md) (verified on `prismal-ai` 3.19.0; 3.17.0 was never published to PyPI).
+
+## Phase 0 — Verify engine surfaces
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-00-01 | Bump pin `prismal-ai>=3.17,<4`; record the current four guard entry points | 0.2 d | engine 3.17 | NFR-001/002 | `DONE` |
+| RH2-00-02 | Verify `prismal.events.agui` symbols and `get_run_summary` / `to_usage_wire` signatures | 0.2 d | 00-01 | USG-001, AGU-001 | `DONE` |
+| RH2-00-03 | Confirm engine 3.17 ships HRS (HRS1-01…09 `DONE`): `build_runtime(config_source=)`, `budget_status`, `quota_windows`, `audit_page`/`verify_audit_chain`, `decisions_report`, `routing_report`, `a2a_routes`, plus handler `headers=`/`org_id=`; copy the HRS §3 table into the guard allowlist. Any missing item ⇒ dependent RH2 task `BLOCKED` (no host fallback logic) | 0.3 d | 00-01, engine HRS | TEN-001, BUD-*, ADM-*, A2A-*, NFR-002 | `DONE` |
+| RH2-00-04 | Verify AG-UI SSE encoding and A2A v1 header names against engine `ADR-PRT-001` **[verify]** | 0.2 d | 00-01 | AGU-002, A2A-001 | `DONE` |
+| RH2-00-05 | Vendor engine `tests/fixtures/protocols/usage_wire.json` as the shared contract fixture | 0.1 d | 00-02 | USG-002 | `DONE` |
+
+Phase 0 outcome: all HRS surfaces present ⇒ no RH2 task `BLOCKED`. Record: [`VERIFY-RH2-00.md`](./VERIFY-RH2-00.md).
+
+## Phase 1 — Tenant config & gateways
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-01-01 | `config.py`: SPEC §10 settings, validation | 0.3 d | 00-01 | — | `DONE` |
+| RH2-01-02 | `tenancy/secrets.py`: `TenantSecretsPort`, file + env backends, `SecretStr` | 0.5 d | 01-01 | TEN-003 | `DONE` |
+| RH2-01-03 | `tenancy/config_source.py`: `TenantConfigSource` + prefix allowlist | 0.6 d | 01-02 | TEN-001/002 | `DONE` |
+| RH2-01-04 | Registry passes `config_source`; mtime-based rebuild after in-flight turns | 0.5 d | 01-03 | TEN-001/004 | `DONE` |
+| RH2-01-05 | Tests: two tenants, different gateways; forbidden key; secret canary redaction | 0.4 d | 01-04 | TEN-* | `DONE` |
+
+Phase 1 decisions (2026-10-12):
+- `tenant.yaml` = flat map of engine `Settings` field names → scalars (lists/maps JSON-encoded);
+  emitted to the engine as `PRISMAL_<KEY>`. Missing file ⇒ tenant uses process config.
+- Validation is **eager**, before `build_runtime`: the engine's `ChainedConfigSource` swallows a
+  failing sub-source, which would silently fall back to process settings (not fail-closed).
+- Secret keys (`*_api_key`, `*_token`) are refused inline in `tenant.yaml`; they come only from the
+  secrets backend and must also match the prefix allowlist. Empty secret ⇒ refused.
+- File backend: `<host_secrets_dir>/<org_id>/<key>`, or `<host_tenant_config_dir>/<org_id>/secrets/<key>`
+  when `host_secrets_dir` is unset. Env backend: `PRISMAL_SERVER_SECRET__<ORG>__<KEY>` (read-only).
+- `org_id` must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (path-traversal guard).
+- Reload: mtime fingerprint (tenant.yaml + secret files) checked on each registry lookup; turns
+  hold a `Lease`, so a stale or LRU-evicted runtime closes after its last in-flight turn.
+- Counter `tenant_config_reloads_total` is logged only for now (no host metrics backend yet) — RH2-07.
+- Security review fixes (post-merge, two rounds): the prefix allowlist became an **exact key
+  allowlist** (`ALLOWED_KEYS` in `tenancy/config_source.py`, every key also under a SPEC prefix).
+  Endpoints/URLs, operator-key fallback, host paths, process-wide resource sizing and
+  security/privacy/compliance floors (ZDR, retention/ToS deny-lists, risk floor, HITL and
+  calibration gates, remote Ollama, CVE version floors) are refused; engine keys added later are
+  refused by default. With tenant config enabled, tenant selection fails closed: `X-Org-Id` ≠
+  identity `org_id` ⇒ `403 forbidden_tenant`; header without identity org ⇒ honoured only in dev
+  no-auth outside `production`, else `403` (never a silent fallback to the process tenant). Env
+  secrets backend accepts only `^[a-z0-9]+(-[a-z0-9]+)*$` org ids (injective mapping).
+- Trust model (SPEC-RH2-TEN-005, decided 2026-10-12): tenant config is **operator-authored**. A third
+  security review flagged that `budget_*`, `decision_modes` and `opencode_go_monthly_cap_usd` let
+  "a tenant" relax cost governance; under this model they are operator per-tenant policy and are
+  accepted by design. Self-service tenant config would need a tighten-only layer (future work).
+
+## Phase 2 — Usage & budget
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-02-01 | `usage/models.py` (12-key `UsageWire`, reports, `QuotaWindow`) + fixture contract test | 0.3 d | 00-05 | USG-002 | `DONE` |
+| RH2-02-02 | `done.usage` from `get_run_summary(...).to_usage_wire()`; `null` fail-open + counter | 0.4 d | 02-01 | USG-001 | `DONE` |
+| RH2-02-03 | `usage/store.py`: memory + SQLite stores, retention, append on `done` | 0.7 d | 02-02 | USE-001 | `DONE` |
+| RH2-02-04 | `GET /v1/usage`: window, filter, whole-window totals/by_model, cursor paging | 0.6 d | 02-03 | USE-002/003 | `DONE` |
+| RH2-02-05 | `GET /v1/budget`: limits, engine status or `unknown`, quota windows (fail-open) | 0.6 d | 00-03 | BUD-001/002 | `DONE` |
+
+Phase 2 decisions (2026-10-12):
+- `budget_exceeded` HTTP status **429 → 402** (MODIFIES the v0.1 mapping, per §11); the body keeps
+  `message` and adds `scope`/`limit`/`consumed`. The route primes the first stream item (bounded by
+  `sse_heartbeat_s`) so a budget refusal before the first token is a 402, not a stream; other
+  first-item errors still stream as `error` (v0.1 CHT-006).
+- `get_run_summary` returns the session's *last* turn: the host snapshots its `run_id` before the
+  turn and reports usage only for a new run, so a turn without LLM calls never re-reports the
+  previous turn (prevents double counting).
+- Only `done` persists a record (USE-001); a mid-stream `budget_exceeded` carries the partial usage
+  in the `error` event but is not persisted. A2A turns are not recorded in 0.2.
+- `/v1/usage` turns are newest first with an opaque keyset cursor; a malformed cursor is
+  `400 invalid_cursor` (new code). Unparsable / offset-less / inverted / > 31 d windows are
+  `400 invalid_window`.
+- Counters live in `prismal_server.metrics` (in-process); export is RH2-07.
+- New dependency `aiosqlite` (SQLite store).
+- Security review fixes (post-merge): (1) the engine keys conversation state and run summaries
+  by thread id alone, process-wide, so the host now sends an **org-scoped engine thread key**
+  `f"{len(org)}:{org}:{thread_id}"` (raw id when single-tenant); clients still see their own
+  `thread_id`; single-tenant raw ids shaped `^\d+:` are refused (`422 invalid_thread_id`) so they
+  cannot alias an org-scoped key. MODIFIES the engine-side mapping of SPEC-RHB-THR-001. **Upgrade note (CHANGELOG,
+  RH2-07):** multi-tenant 0.1 deployments lose continuity of threads started before the upgrade.
+  (2) usage/budget (and later admin) reads resolve the org fail-closed (`for_read=True`): a header
+  can never select another org's records; mismatch ⇒ `403 forbidden_tenant`.
+
+## Phase 3 — AG-UI
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-03-01 | Negotiation (Accept profile / `?protocol=`) and `406 protocol_not_enabled` | 0.3 d | 00-02 | AGU-001/003 | `DONE` |
+| RH2-03-02 | `streaming.agui_bridge`: start/translate/finish/error, data-only frames, heartbeat, cancel | 0.7 d | 03-01 | AGU-002/004 | `DONE` |
+| RH2-03-03 | `POST /v1/agui` `RunAgentInput` adapter | 0.4 d | 03-02 | AGU-005 | `DONE` |
+| RH2-03-04 | Tests: engine golden events framed; `RUN_ERROR`; usage before `RUN_FINISHED`; disconnect | 0.4 d | 03-02 | AGU-* | `DONE` |
+
+Phase 3 decisions (2026-10-12):
+- Engine golden AG-UI streams (12) vendored to `tests/fixtures/protocols/agui/`; the host bridge
+  reproduces each one event-for-event. Frames are `data: <event.to_wire() JSON>` — the engine's
+  `to_sse` helper is not in the HRS allowlist, so the host frames via the event's own method.
+- Engine AG-UI flags come from the tenant runtime's `settings` (process engine settings via the
+  `prismal.a2a.get_settings` seam re-export when unset). `?protocol=` beats `Accept` profile;
+  an unknown `?protocol=` is `422`.
+- AG-UI turns share the native turn path: org-scoped engine thread key, 402 before the first
+  token, usage persisted on success. `RUN_STARTED.threadId` is the client thread id;
+  `RUN_STARTED.input` is not echoed; `finish_run(result=None)` (the host has no final result).
+- `POST /v1/agui`: only the last `user` message's text is the turn input (history lives in the
+  engine checkpoint, it is not replayed); text parts of `InputContent[]` are joined; no user
+  text ⇒ `422 invalid_input` (new code); client `tools` ignored and logged.
+
+## Phase 4 — A2A v1.0
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-04-01 | Forward headers + `org_id` to `handle_rpc` / `stream_rpc` | 0.3 d | 00-03 | A2A-001 | `DONE` |
+| RH2-04-02 | Versioned card (`?protocolVersion=`), tenant-scoped routes | 0.5 d | 04-01 | A2A-002/003 | `DONE` |
+| RH2-04-03 | Path-tenant mismatch `403`; v0.1 strict/404 behaviours on both stacks | 0.3 d | 04-02 | A2A-003/004 | `DONE` |
+| RH2-04-04 | Tests: v0.3 + v1 client smoke, `tasks/list` through the host | 0.4 d | 04-03 | A2A-* | `DONE` |
+
+Phase 4 decisions (2026-10-12):
+- Streaming dispatch uses the engine's own method names (`prismal.a2a.v1.constants`
+  `METHOD_SEND_STREAMING_MESSAGE`, `LEGACY_METHOD_STREAM`) — no host protocol constants. That
+  module is under the v0.1 `prismal.a2a` seam prefix, not an HRS §3 row: open item for RH2-07-01
+  together with `prismal.identity`.
+- Headers forwarded to the engine exclude `Authorization`, `Proxy-Authorization` and `Cookie`;
+  `?A2A-Version=` becomes the header when absent.
+- Tenant routes `{base}/{tenant}` (POST) and `{base}/{tenant}/.well-known/agent-card.json` live
+  under the path of the engine's `a2a_base_url`, registered after every fixed route; other methods
+  on `{base}/{tenant}` answer 404. The RPC route requires the auth-resolved org == path tenant
+  (`403 forbidden_tenant` before the handler) and checks `runtime.a2a_routes()`; the card route is
+  public and checks `a2a_route_paths()`.
+- Public card requests build a runtime only for tenants with a `tenant.yaml` (bounded set); other
+  tenants use process engine settings, which is what their runtime would use anyway.
+- Another-stack card (`?protocolVersion=`) is `404` unless `a2a_accept_legacy`.
+- Security fix: `POST /a2a` resolves the org fail-closed (`for_read=True`), as the tenant route
+  does. The engine scopes `ListTasks`/`GetTask` by the forwarded `org_id`, so a bare `X-Org-Id`
+  (or one differing from the identity org) is `403 forbidden_tenant`; it is honoured only for
+  `host_auth_backend=none` outside production.
+- `POST /a2a` and the root card stay for 0.1 compatibility. Recommended: set the engine
+  `a2a_base_url` to end in `/a2a`, so the root card URL equals `POST /a2a` and tenants live at
+  `/a2a/{tenant}`; with it unset, tenant routes sit at the root.
+
+## Phase 5 — WebSocket
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-05-01 | `routes/ws.py`: handshake auth, `Origin` check, tenant | 0.5 d | 01-04 | WSK-001 | `DONE` |
+| RH2-05-02 | Frame protocol, one turn at a time, cancel, close codes | 0.7 d | 05-01, 03-02 | WSK-002/003 | `DONE` |
+| RH2-05-03 | Heartbeat, frame-size limit, send backpressure | 0.3 d | 05-02 | WSK-003 | `DONE` |
+| RH2-05-04 | Tests (native + AG-UI over WS, 4409/4400/1009/1008) | 0.4 d | 05-03 | WSK-* | `DONE` |
+
+Phase 5 decisions (2026-10-12):
+- `GET /ws/threads/{id}` is mounted only WHERE `host_ws_enabled` (absent route otherwise). Handshake
+  refusals close `1008` before accept: `Origin` sent and not in `cors_origins` (`"*"` allows any;
+  no `Origin` = non-browser client, allowed); strict mode without credential; tenant resolved
+  fail-closed (`for_read=True`), so `X-Org-Id` never selects another tenant on WebSocket.
+- Turns reuse `routes/threads.open_turn` (org-scoped engine thread key, runtime lease, AG-UI gate,
+  usage record) and the transport-free generators `streaming.native_events` / `agui_events`, which
+  SSE now frames too — WS `data` is byte-for-byte the SSE payload (DD-RH2-007).
+- A turn that cannot start or fails (`budget_exceeded`, `protocol_not_enabled`,
+  `invalid_thread_id`, …) is an `error` frame with the SSE error body; the connection stays open
+  (WebSocket has no status code for 402/406/422).
+- Busy is cleared when the terminal frame (`done`/`error`, `RUN_FINISHED`/`RUN_ERROR`) is sent, so
+  a client replying to `done` immediately is not `4409`. `cancel` with no turn is ignored.
+- Concurrency is anyio-structured (task group + per-turn cancel scope, shielded cleanup): a
+  disconnect, close or server shutdown cancels the turn, closes the graph stream and releases the
+  lease. Backpressure: sends are awaited under one lock and the turn's `ChunkPump` is bounded (64).
+- Server heartbeat is connection-level (`{"event":"heartbeat"}` every `sse_heartbeat_s`);
+  per-turn idle markers are dropped. Metric `ws_sessions_total{close_code}` (in-process).
+- Browser tickets stay out of scope (header-only auth in 0.2, ARCHITECTURE §8.2).
+
+## Phase 6 — Fake-LLM mode & admin
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-06-01 | `host_fake_llm_mode`, production refusal, `X-Prismal-Fake-LLM` header | 0.3 d | 01-01 | FAK-001/003 | `DONE` |
+| RH2-06-02 | `fake/runtime.py` deterministic script (or engine fake model) | 0.5 d | 06-01 | FAK-002 | `DONE` |
+| RH2-06-03 | Admin gate + `GET /v1/admin/tenants` | 0.4 d | 01-04 | ADM-001/002 | `DONE` |
+| RH2-06-04 | `GET /v1/admin/audit` paging + chain status | 0.6 d | 06-03, 00-03 | ADM-003 | `DONE` |
+| RH2-06-05 | Tests: script determinism, production refusal, admin 404/403/cross-tenant | 0.3 d | 06-04 | FAK-*, ADM-* | `DONE` |
+| RH2-06-06 | `GET /v1/admin/decisions` from `decisions_report()` (+ tests: disabled, null ratio, clamped window) | 0.4 d | 06-03, 00-03 | ADM-004 | `DONE` |
+| RH2-06-07 | `GET /v1/admin/routing` from `routing_report()` (+ tests: disabled, 403, field mapping) | 0.4 d | 06-03, 00-03 | ADM-005 | `DONE` |
+
+Phase 6 decisions (2026-11-02):
+- Fake mode (`host_fake_llm_mode`): runtimes come from the engine's `build_test_runtime(org_id=)`
+  (composition seam; no I/O, no gateways) and chat is served by the host `fake.FakeGraph` script.
+  The engine ships no fake chat model, so the script stands in for the compiled graph only. It
+  never touches engine logic. `build_test_runtime` takes no `config_source`, so `tenant.yaml` is
+  ignored in fake mode.
+- Production refusal is a `HostSettings` validator: `host_fake_llm_mode` with
+  `host_environment="production"` fails settings validation, so the process never starts.
+- `/error` raises `FakeScriptError`, mapped to `500 internal_error` ("fake error"); it streams as
+  the terminal `error` event once the stream has started. Usage is the fixed FAK-002 wire, with one
+  fresh `run_id` per turn, so every turn persists one usage record.
+- `X-Prismal-Fake-LLM: 1` comes from a pure ASGI middleware on `http.response.start` (SSE
+  included) and `websocket.accept`; `/readyz` is unchanged.
+- Admin router is always mounted and answers `404` while `host_admin_enabled=false`; with it on,
+  the identity needs `host_admin_scope` (else `403 forbidden`, new code) before any engine call;
+  strict mode without a credential stays `401`.
+- Admin tenant targeting is identity-only and fail-closed: `X-Org-Id` is ignored. An admin reads
+  its own org; any other `org_id`, `*`, or an identity without an org (the engine's process-wide
+  view) needs `<host_admin_scope>:global`. A non-global admin's `/tenants` lists only its own org.
+- `/v1/admin/tenants`: live registry entries (with `created_at`/`last_used_at`) plus tenants with a
+  `tenant.yaml` that are not live; `config_source` is `vault` for a configured tenant, else
+  `process`. Gateways are names only, never secrets.
+- `/v1/admin/audit`: `audit_page` and `verify_audit_chain` read the audit file, so both run in a
+  worker thread; `page` < 1 or `page_size` outside 1..200 ⇒ `422`. `decisions_report` and
+  `routing_report` aggregate the engine's in-memory stats recorders and run on the loop. Windows
+  default to the last 7 d; inverted / unparsable ⇒ `400 invalid_window` (no 31 d cap: the engine
+  clamps to its stats retention).
+
+## Phase 7 — Hardening & release
+
+| ID | Task | Est. | Dep | SPEC | Status |
+|---|---|---|---|---|---|
+| RH2-07-01 | Import guard: allowlist = HRS §3 public host read surface, nothing else | 0.2 d | all | NFR-002/003 | `DONE` |
+| RH2-07-02 | `contract` suite vs released engine in fake mode (native, AG-UI, A2A v1, usage) | 0.4 d | 06-02 | all | `DONE` |
+| RH2-07-03 | OpenAPI examples (no secrets) + docs: usage, AG-UI, WS, admin, tenant config | 0.6 d | all | — | `DONE` |
+| RH2-07-04 | CHANGELOG, tag `v0.2.0`, GHCR image | 0.3 d | 07-02 | — | `WIP` |
+
+Phase 7 decisions (2026-11-02):
+- RH2-07-01: the guard is now an **exact per-module symbol allowlist** (`from <module> import <name>`
+  only). The prefix rule is gone, so sub-modules (`prismal.composition.runtime`), parent packages,
+  bare imports and unlisted names all fail. `HRS_SURFACE` mirrors HRS §3 rows 1–6; row 6 covers
+  only the 12 view types, never the module-level report functions. The open item from RH2-4 is
+  closed by listing `HOST_EXCEPTIONS` by name: `A2AServerHandler`, `AuthContext`,
+  `a2a_route_paths`, `prismal.a2a.v1.constants` (`METHOD_SEND_STREAMING_MESSAGE`,
+  `LEGACY_METHOD_STREAM`, `VERSION_HEADER`) and `prismal.identity`. HRS §3 forbids silently
+  removing them, and promoting them to HRS rows is an engine follow-up (a coordinated minor).
+  The host now imports `build_runtime`/`build_test_runtime` from `prismal.composition`.
+- RH2-07-02: `tests/contract/test_v02_contract.py` runs fake mode against the released engine:
+  native (fixture key order), `/tool`, `/error`, AG-UI through both entry points (real engine
+  translator, `PRISMAL_AGUI_EVENTS_ENABLED=true`), and `/v1/usage` sums. Fake mode composes no A2A
+  handler, and FAK-001 is unchanged, so the A2A v1 contract wraps the released
+  `A2AServerHandler` around a scripted graph injected through the registry builder. It covers the
+  versioned card, then `SendMessage` → `TASK_STATE_COMPLETED`, then `ListTasks`.
+- RH2-07-03: OpenAPI examples live in `prismal_server.openapi_examples` (taken from SPEC §3/§4/§9).
+  FastAPI encodes the document with `exclude_none=True`, which strips `null` inside examples, so
+  each declared response is tagged and restored verbatim after generation. A test scans every
+  example for secret-shaped text and checks error codes and usage key order. Fixed during this
+  task: the admin `404` now has the §11 code `admin_disabled` (it was a bare 404), and SPEC §11
+  is synced with the codes added in RH2-2…6.
+- RH2-07-04: `CHANGELOG.md` (with the upgrade notes for the thread key and `402`), version
+  `0.2.0`. **Left for the user:** push tag `v0.2.0` (merged `develop` → `main` first).
+  `release.yml` then builds the GHCR image and drafts the GitHub release, as for `v0.1.0`.
+- Metrics export (in-process counters) stays a follow-up; no task covers it in 0.2.
+
+
+## Test inventory & traceability
+
+| SPEC area | Tasks | Tests |
+|---|---|---|
+| NFR-001..003 | 00-01, 07-01 | `tests/unit/test_import_guard.py` |
+| TEN-001..004 | 01-01..05 | `tests/unit/tenancy/test_{config_source,secrets,reload}.py` |
+| USG-001/002 | 00-05, 02-01, 02-02 | `tests/unit/usage/test_usage_wire_contract.py`, `tests/unit/test_streaming_done_usage.py` |
+| USE-001..003 | 02-03, 02-04 | `tests/unit/usage/test_{store,aggregate}.py`, `tests/unit/routes/test_usage.py` |
+| BUD-001/002 | 02-05 | `tests/unit/routes/test_budget.py` |
+| AGU-001..005 | 03-01..04 | `tests/unit/test_streaming_agui.py`, `tests/unit/routes/test_agui_input.py` |
+| A2A-001..004 | 04-01..04 | `tests/unit/routes/test_a2a_v1.py` |
+| WSK-001..003 | 05-01..04 | `tests/unit/routes/test_ws.py` |
+| FAK-001..003 | 06-01, 06-02, 06-05 | `tests/unit/fake/test_fake_runtime.py` |
+| ADM-001..005 | 06-03..07 | `tests/unit/routes/test_admin.py`, `tests/unit/routes/test_admin_reports.py` |
+| OpenAPI examples | 07-03 | `tests/unit/test_openapi_examples.py` |
+| all (live engine) | 07-02 | `tests/contract/test_v02_contract.py` (`contract` marker) |
+
+## Risk register
+
+| Risk | Mitigation |
+|---|---|
+| HRS slips from 3.17 | RH2-00-03 marks dependent tasks `BLOCKED`; release waits — host never re-implements engine reads |
+| Usage key drift between repos | Vendored engine fixture; contract test in host and SDK |
+| SQLite store contention under load | Batched writes; Postgres adapter tracked as follow-up |
+| WS proxies drop idle connections | App-level heartbeat at `sse_heartbeat_s` |
+
+## Definition of Done (v0.2)
+
+- Every MUST in SPEC has ≥ 1 task and ≥ 1 test; import guard green with the extended allowlist.
+- `done.usage` matches the shared fixture byte-for-byte in key order; `/v1/usage` and `/v1/budget`
+  match SPEC §4 examples in shape.
+- AG-UI stream validated by a reference AG-UI client; native stream unchanged except `usage`.
+- `prismal-sdk` contract suite (CSB-05-01 / CS2-05-01) green against `host_fake_llm_mode=true`.
+- No tenant secret in logs/bodies (canary test); admin endpoints off by default.
+
+## Estimate roll-up
+
+RH2-0 1.0 d · RH2-1 2.3 d · RH2-2 2.6 d · RH2-3 1.8 d · RH2-4 1.5 d · RH2-5 1.9 d · RH2-6 2.9 d ·
+RH2-7 1.5 d → **~15.5 person-days**.
+
+---
+
+## Change History
+
+| Version | Date | Author | Changes |
+|---|---|---|---|
+| 1.0 | 2026-10-04 | Ernesto Crespo | Initial task breakdown for host v0.2 |
+| 1.1 | 2026-10-12 | Ernesto Crespo | Phase 0 `DONE` (engine 3.19.0 verified; see VERIFY-RH2-00.md) |
+| 1.2 | 2026-10-12 | Ernesto Crespo | Phase 1 `DONE` (tenant config & gateways) |
+| 1.3 | 2026-10-12 | Ernesto Crespo | Phase 2 `DONE` (usage & budget) |
+| 1.4 | 2026-10-12 | Ernesto Crespo | Phase 3 `DONE` (AG-UI) |
+| 1.5 | 2026-10-12 | Ernesto Crespo | Phase 4 `DONE` (A2A v1.0 dual stack) |
+| 1.6 | 2026-10-12 | Ernesto Crespo | Phase 5 `DONE` (WebSocket) |
+| 1.7 | 2026-11-02 | Ernesto Crespo | Phase 6 `DONE` (fake-LLM mode & admin) |
+| 1.8 | 2026-11-02 | Ernesto Crespo | Phase 7: RH2-07-01..03 `DONE`; 07-04 awaiting tag push |

@@ -9,7 +9,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient
+from prismal.identity import DID, AgentIdentity
 from pydantic import SecretStr
 
 from prismal_server.app import create_app
@@ -158,7 +160,7 @@ class _NullBackend:
 
 
 def _fake_registry() -> RuntimeRegistry:
-    async def builder(*, org_id: str | None) -> Any:
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
         return type("RT", (), {"tool_provider": object(), "org_id": org_id})()
 
     return RuntimeRegistry(HostSettings(), builder=builder)
@@ -250,3 +252,137 @@ async def test_identity_org_id_threaded_into_graph_config() -> None:
             headers={"Authorization": "Bearer tok", "X-Org-Id": "acme"},
         )
     assert calls[0]["config"]["configurable"]["org_id"] == "acme"
+
+
+# ── Security review fix: tenant credentials need an authenticated org ─────
+
+
+def _app_request(headers: dict[str, str], **settings: Any) -> Any:
+    from prismal_server.config import HostSettings
+
+    app = SimpleNamespace(state=SimpleNamespace(settings=HostSettings(**settings)))
+    return SimpleNamespace(headers=headers, app=app)
+
+
+def test_header_tenant_refused_when_tenant_config_and_real_auth(
+    tmp_path: Any,
+) -> None:
+    """A bearer/OIDC caller cannot pick another tenant's vault config by header."""
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="bearer",
+    )
+    from prismal_server.auth import ForbiddenTenant
+
+    with pytest.raises(ForbiddenTenant):
+        resolve_org_id(req, None)
+    ident_no_org = AgentIdentity(did=DID("did:key:zNoOrg"), agent_name="x")
+    with pytest.raises(ForbiddenTenant):
+        resolve_org_id(req, ident_no_org)
+
+
+def test_header_tenant_refused_in_production_even_without_auth(tmp_path: Any) -> None:
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_environment="production",
+    )
+    from prismal_server.auth import ForbiddenTenant
+
+    with pytest.raises(ForbiddenTenant):
+        resolve_org_id(req, None)
+
+
+def test_header_tenant_kept_for_dev_noauth_and_without_tenant_config(
+    tmp_path: Any,
+) -> None:
+    dev = _app_request({"X-Org-Id": "acme"}, host_tenant_config_dir=tmp_path)
+    assert resolve_org_id(dev, None) == "acme"
+    v01 = _app_request({"X-Org-Id": "acme"}, host_auth_backend="bearer")
+    assert resolve_org_id(v01, None) == "acme"  # v0.1 behaviour unchanged
+
+
+def test_identity_org_selects_tenant_with_tenant_config(tmp_path: Any) -> None:
+    req = _app_request(
+        {},
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="oidc",
+    )
+    ident = AgentIdentity(did=DID("did:key:zB"), agent_name="b", org_id="beta")
+    assert resolve_org_id(req, ident) == "beta"
+
+
+# ── Security review 2: refused header tenant is an error, not a fallback ──
+
+
+def test_refused_header_tenant_raises_forbidden(tmp_path: Any) -> None:
+    from prismal_server.auth import ForbiddenTenant
+
+    req = _app_request(
+        {"X-Org-Id": "acme"},
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="bearer",
+    )
+    with pytest.raises(ForbiddenTenant):
+        resolve_org_id(req, None)
+
+
+def test_header_mismatching_identity_org_is_forbidden(tmp_path: Any) -> None:
+    from prismal_server.auth import ForbiddenTenant
+
+    req = _app_request(
+        {"X-Org-Id": "acme"}, host_tenant_config_dir=tmp_path, host_auth_backend="oidc"
+    )
+    ident = AgentIdentity(did=DID("did:key:zB"), agent_name="b", org_id="beta")
+    with pytest.raises(ForbiddenTenant):
+        resolve_org_id(req, ident)
+    same = _app_request(
+        {"X-Org-Id": "beta"}, host_tenant_config_dir=tmp_path, host_auth_backend="oidc"
+    )
+    assert resolve_org_id(same, ident) == "beta"
+
+
+def test_missing_app_settings_falls_back_to_process_settings(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``app.state.settings`` must not mean 'trust the header'."""
+    from prismal_server import config
+    from prismal_server.auth import ForbiddenTenant
+
+    monkeypatch.setenv("PRISMAL_SERVER_HOST_TENANT_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("PRISMAL_SERVER_HOST_AUTH_BACKEND", "bearer")
+    config.get_settings.cache_clear()
+    try:
+        with pytest.raises(ForbiddenTenant):
+            resolve_org_id(_request({"X-Org-Id": "acme"}), None)
+    finally:
+        config.get_settings.cache_clear()
+
+
+async def test_forbidden_tenant_http_shape(tmp_path: Any) -> None:
+    settings = HostSettings(
+        host_tenant_config_dir=tmp_path,
+        host_auth_backend="bearer",
+        bearer_static_tokens={"tok": "did:key:zCaller"},
+    )
+
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
+        return type("RT", (), {"tool_provider": object(), "org_id": org_id})()
+
+    async def graph_factory(*, tool_provider: Any = None) -> Any:
+        raise AssertionError("graph must not run for a forbidden tenant")
+
+    app = create_app(
+        settings=settings,
+        registry=RuntimeRegistry(settings, builder=builder),
+        graph_factory=graph_factory,
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.post(
+            "/threads/t/messages",
+            json={"content": "x"},
+            headers={"Authorization": "Bearer tok", "X-Org-Id": "acme"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden_tenant"

@@ -50,7 +50,7 @@ def fake_registry() -> RuntimeRegistry:
     """
     from prismal.composition import build_test_runtime
 
-    async def builder(*, org_id: str | None) -> Any:
+    async def builder(*, org_id: str | None, config_source: Any = None) -> Any:
         return build_test_runtime(org_id=org_id)
 
     return RuntimeRegistry(HostSettings(), builder=builder)
