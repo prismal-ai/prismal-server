@@ -34,6 +34,7 @@ from prismal_server import metrics
 from prismal_server.auth import ForbiddenTenant, resolve_org_id
 from prismal_server.errors import map_exception
 from prismal_server.routes.threads import Protocol, open_turn
+from prismal_server.tracing import conversation_id, fail_span
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,10 @@ async def _reject(websocket: WebSocket) -> None:
     await websocket.close(code=CLOSE_POLICY)
 
 
-@router.websocket("/ws/threads/{thread_id}")
+WS_ROUTE = "/ws/threads/{thread_id}"
+
+
+@router.websocket(WS_ROUTE)
 async def ws_thread(websocket: WebSocket, thread_id: str) -> None:
     """Chat turns for ``thread_id`` over one WebSocket connection."""
     state = websocket.app.state
@@ -223,17 +227,27 @@ class _Session:
             done.set()
 
     async def _stream_turn(self, frame: MessageFrame) -> None:
+        agui = frame.protocol == "ag-ui"
+        # One root span per turn, not per connection (RH3-01-03).
+        span = self._state.tracing.turn(
+            route=WS_ROUTE, transport="ws", protocol="ag-ui" if agui else "native"
+        )
+        span.set_tenant(self._org_id, conversation_id(self._org_id, self._thread_id))
         try:
-            turn = await open_turn(
+            turn = await open_turn(  # starts the pump task under the span
                 self._state,
                 org_id=self._org_id,
                 thread_id=self._thread_id,
                 role=frame.role,
                 content=frame.content,
-                agui=frame.protocol == "ag-ui",
+                agui=agui,
                 pump_maxsize=_PUMP_MAXSIZE,
+                span=span,
             )
-        except Exception as exc:
+        except BaseException as exc:
+            fail_span(span, exc)
+            if not isinstance(exc, Exception):
+                raise
             await self._send_error(exc)
             return
         try:

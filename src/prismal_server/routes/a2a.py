@@ -25,6 +25,8 @@ Seam: inbound A2A — ``build_agent_card`` / ``A2AServerHandler`` (via the engin
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -32,7 +34,9 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from prismal.a2a import a2a_route_paths
 from prismal.a2a.v1.constants import (
+    LEGACY_METHOD_SEND,
     LEGACY_METHOD_STREAM,
+    METHOD_SEND_MESSAGE,
     METHOD_SEND_STREAMING_MESSAGE,
     VERSION_HEADER,
 )
@@ -40,6 +44,7 @@ from starlette.background import BackgroundTask
 
 from prismal_server.auth import ForbiddenTenant, resolve_org_id
 from prismal_server.deps import Lease, release_after
+from prismal_server.tracing import TurnSpan, conversation_id, fail_span, route_template
 
 router = APIRouter(tags=["a2a"])
 
@@ -48,6 +53,15 @@ _A2A_UNAVAILABLE = -32000
 
 # The engine streams exactly these methods (its own constants, ADR-PRT-001).
 _STREAMING_METHODS = frozenset({METHOD_SEND_STREAMING_MESSAGE, LEGACY_METHOD_STREAM})
+
+# Message-sending methods are runs (RH3-01-04); the method family is the
+# engine's own stack negotiation (legacy names ⇒ 0.3, PascalCase ⇒ 1.0).
+_RUN_PROTOCOLS = {
+    METHOD_SEND_MESSAGE: "a2a-1.0",
+    METHOD_SEND_STREAMING_MESSAGE: "a2a-1.0",
+    LEGACY_METHOD_SEND: "a2a-0.3",
+    LEGACY_METHOD_STREAM: "a2a-0.3",
+}
 
 # Never forwarded to the engine: it needs the version header, not credentials.
 _DROPPED_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie"})
@@ -108,19 +122,20 @@ async def _dispatch(
     except BaseException:
         await lease.release()
         raise
+    span = _run_span(request, payload, org_id)
     handler = getattr(lease.runtime, "a2a_handler", None)
     if handler is None:
         await lease.release()
-        return JSONResponse(
-            {
-                "jsonrpc": "2.0",
-                "id": payload.get("id"),
-                "error": {
-                    "code": _A2A_UNAVAILABLE,
-                    "message": "inbound A2A is not enabled on the engine",
-                },
-            }
-        )
+        body = {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "error": {
+                "code": _A2A_UNAVAILABLE,
+                "message": "inbound A2A is not enabled on the engine",
+            },
+        }
+        _finish_rpc(span, body)
+        return JSONResponse(body)
 
     kwargs: dict[str, Any] = {
         "auth_ctx": _to_auth_ctx(identity),
@@ -128,17 +143,107 @@ async def _dispatch(
         "org_id": org_id,
     }
     if payload.get("method") in _STREAMING_METHODS:
+        frames = handler.stream_rpc(payload, **kwargs)
+        if span is not None:
+            frames = _traced_stream(span, frames)
         # The lease spans the stream (SPEC-RH2-TEN-004).
         return StreamingResponse(
-            release_after(lease, handler.stream_rpc(payload, **kwargs)),
+            release_after(lease, frames),
             media_type="text/event-stream",
-            background=BackgroundTask(lease.release),
+            background=BackgroundTask(_release, lease, span),
         )
     try:
-        result = await handler.handle_rpc(payload, **kwargs)
+        if span is None:
+            result = await handler.handle_rpc(payload, **kwargs)
+        else:
+            with span.activate():  # engine spans nest under the run span
+                result = await handler.handle_rpc(payload, **kwargs)
+    except BaseException as exc:
+        if span is not None:
+            fail_span(span, exc)
+        raise
     finally:
         await lease.release()
+    _finish_rpc(span, result)
     return JSONResponse(result)
+
+
+def _run_span(request: Request, payload: Any, org_id: str | None) -> TurnSpan | None:
+    """A root span for a message-sending RPC; ``None`` for task management."""
+    method = payload.get("method") if isinstance(payload, dict) else None
+    protocol = _RUN_PROTOCOLS.get(method) if isinstance(method, str) else None
+    if protocol is None:
+        return None
+    span: TurnSpan = request.app.state.tracing.turn(
+        route=route_template(request),
+        transport="a2a",
+        protocol=protocol,
+        a2a_method=method,
+    )
+    span.set_tenant(org_id, conversation_id(org_id, _context_id(payload)))
+    return span
+
+
+def _context_id(payload: dict[str, Any]) -> str | None:
+    """``params.message.contextId`` when well-formed (the A2A conversation)."""
+    params = payload.get("params")
+    message = params.get("message") if isinstance(params, dict) else None
+    context = message.get("contextId") if isinstance(message, dict) else None
+    return context if isinstance(context, str) and context else None
+
+
+def _rpc_error_code(body: Any) -> Any:
+    error = body.get("error") if isinstance(body, dict) else None
+    return error.get("code") if isinstance(error, dict) else None
+
+
+def _finish_rpc(span: TurnSpan | None, body: Any) -> None:
+    if span is None:
+        return
+    code = _rpc_error_code(body)
+    if code is not None:
+        span.fail(f"jsonrpc.{code}")
+    else:
+        span.complete()
+    span.end()
+
+
+async def _traced_stream(
+    span: TurnSpan, frames: AsyncIterator[str]
+) -> AsyncIterator[str]:
+    """Pass SSE frames through; the first JSON-RPC ``error`` fails the run span."""
+    try:
+        while True:
+            with span.activate():  # each engine step runs under the run span
+                try:
+                    frame = await anext(frames)
+                except StopAsyncIteration:
+                    break
+            for line in frame.splitlines():
+                if line.startswith("data:"):
+                    try:
+                        code = _rpc_error_code(json.loads(line[5:]))
+                    except ValueError:
+                        continue
+                    if code is not None:
+                        span.fail(f"jsonrpc.{code}")
+            yield frame
+    except BaseException as exc:
+        fail_span(span, exc)
+        raise
+    else:
+        span.complete()  # no-op when an error frame already failed it
+    finally:
+        span.end()
+        aclose = getattr(frames, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+async def _release(lease: Lease, span: TurnSpan | None) -> None:
+    if span is not None:
+        span.end()
+    await lease.release()
 
 
 async def _card(
