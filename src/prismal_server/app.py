@@ -33,6 +33,7 @@ from prismal_server.fake import (
     fake_builder,
 )
 from prismal_server.routes import a2a, admin, agui, health, threads, usage, ws
+from prismal_server.tracing import Tracing
 from prismal_server.usage.store import UsageStore, build_usage_store
 from prismal_server.usage.summary import RunSummaryLookup, default_run_summary
 
@@ -88,6 +89,7 @@ def create_app(
     usage_store: UsageStore | None = None,
     run_summary: RunSummaryLookup | None = None,
     a2a_engine_settings: Any = None,
+    tracing: Tracing | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
@@ -108,6 +110,7 @@ def create_app(
     usage_store = usage_store or build_usage_store(settings)
     run_summary = run_summary or default_run_summary
     a2a_engine_settings = a2a_engine_settings or _default_a2a_engine_settings()
+    tracing = tracing or Tracing(settings)  # RH3-01: no-op unless enabled
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -120,6 +123,7 @@ def create_app(
             # Shutdown: release every tenant runtime (SPEC-RHB-LIF-002).
             await registry.aclose_all()
             await usage_store.aclose()
+            await tracing.aclose()  # bounded flush (RH3-01)
 
     app = FastAPI(
         title="prismal-server",
@@ -137,6 +141,7 @@ def create_app(
     app.state.usage_store = usage_store
     app.state.run_summary = run_summary
     app.state.a2a_engine_settings = a2a_engine_settings
+    app.state.tracing = tracing
 
     register_exception_handlers(app)
     openapi_examples.install(app)  # RH2-07-03: examples served verbatim

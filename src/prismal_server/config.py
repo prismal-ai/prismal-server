@@ -89,6 +89,14 @@ class HostSettings(BaseSettings):
     host_admin_enabled: bool = False
     host_admin_scope: str = Field(default="prismal:admin", min_length=1)
 
+    # Per-request OTel traces for agentlens (RH3-01). Off by default; the
+    # headers (e.g. X-Agentlens-Key) are secrets and never logged or returned.
+    host_otel_enabled: bool = False
+    host_otel_endpoint: str = "http://localhost:4318"
+    host_otel_headers: dict[str, SecretStr] = {}
+    host_otel_service_name: str = "prismal-server"
+    host_otel_agent_name: str = "prismal"
+
     @model_validator(mode="after")
     def _no_fake_llm_in_production(self) -> HostSettings:
         # SPEC-RH2-FAK-001: a fake model must never answer production traffic.
