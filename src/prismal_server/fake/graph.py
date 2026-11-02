@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
+from langgraph.types import Command, Interrupt
 from prismal.composition import build_test_runtime
 
 ECHO_PREFIX = "echo: "
@@ -67,6 +69,23 @@ class FakeSummaries:
 
 
 @dataclass
+class FakeCheckpoint:
+    """Pending interrupts per engine thread key (the fake ``aget_state``)."""
+
+    pending: dict[str, tuple[Interrupt, ...]] = field(default_factory=dict)
+    _count: int = 0
+
+    def interrupt(self, thread_id: str, message: str) -> Interrupt:
+        self._count += 1
+        intr = Interrupt(
+            value={"reason": "input_required", "message": message},
+            id=f"fake-int-{self._count}",
+        )
+        self.pending[thread_id] = (intr,)
+        return intr
+
+
+@dataclass
 class _NativeMessage:
     """A native-mode chunk: ``tool_call`` args stay an object (FAK-002)."""
 
@@ -84,13 +103,25 @@ class FakeGraph:
     """Scripted stand-in for the compiled graph.
 
     ``/tool <q>`` ⇒ one ``fake_tool`` call; ``/error`` ⇒ ``FakeScriptError``;
-    anything else ⇒ ``"echo: " + content[:200]`` in ≤ 16-char chunks. A list
+    ``/interrupt <msg>`` ⇒ a LangGraph ``__interrupt__`` update (AG-UI mode
+    only), pending until a ``Command(resume=...)`` input, which echoes
+    ``"resumed: " + json(resume)``; anything else ⇒ ``"echo: " + content[:200]``
+    in ≤ 16-char chunks. A list
     ``stream_mode`` (AG-UI) yields ``("messages", (chunk, meta))`` with real
     message chunks, which the engine's AG-UI translator requires.
     """
 
-    def __init__(self, summaries: FakeSummaries | None = None) -> None:
+    def __init__(
+        self,
+        summaries: FakeSummaries | None = None,
+        checkpoint: FakeCheckpoint | None = None,
+    ) -> None:
         self.summaries = summaries or FakeSummaries()
+        self.checkpoint = checkpoint or FakeCheckpoint()
+
+    async def aget_state(self, config: Any) -> Any:
+        thread_id = config["configurable"]["thread_id"]
+        return SimpleNamespace(interrupts=self.checkpoint.pending.get(thread_id, ()))
 
     def astream(
         self, graph_input: Any, config: Any, *, stream_mode: Any = None
@@ -101,20 +132,42 @@ class FakeGraph:
         self, graph_input: Any, config: Any, *, tagged: bool
     ) -> AsyncIterator[Any]:
         thread_id = config["configurable"]["thread_id"]
-        text = _last_user_text(graph_input)
         meta = {"langgraph_node": "agent"}
+        if isinstance(graph_input, Command):
+            self.checkpoint.pending.pop(thread_id, None)
+            text = "resumed: " + json.dumps(graph_input.resume, sort_keys=True)
+            async for chunk in self._echo(text, tagged=tagged, meta=meta):
+                yield chunk
+            self.summaries.record(thread_id)
+            return
+        text = _last_user_text(graph_input)
+        if text.startswith("/interrupt "):
+            intr = self.checkpoint.interrupt(
+                thread_id, text.removeprefix("/interrupt ")
+            )
+            if tagged:
+                yield ("updates", {"__interrupt__": (intr,)})
+            self.summaries.record(thread_id)
+            return
         if text.strip() == "/error":
             raise FakeScriptError()
         if text.startswith("/tool "):
             query = text.removeprefix("/tool ")
             yield self._chunk(tool_query=query, tagged=tagged, meta=meta)
         else:
-            reply = ECHO_PREFIX + text[:ECHO_MAX_CHARS]
-            for i in range(0, len(reply), TOKEN_CHARS):
-                yield self._chunk(
-                    content=reply[i : i + TOKEN_CHARS], tagged=tagged, meta=meta
-                )
+            async for chunk in self._echo(
+                ECHO_PREFIX + text[:ECHO_MAX_CHARS], tagged=tagged, meta=meta
+            ):
+                yield chunk
         self.summaries.record(thread_id)
+
+    async def _echo(
+        self, reply: str, *, tagged: bool, meta: dict[str, Any]
+    ) -> AsyncIterator[Any]:
+        for i in range(0, len(reply), TOKEN_CHARS):
+            yield self._chunk(
+                content=reply[i : i + TOKEN_CHARS], tagged=tagged, meta=meta
+            )
 
     @staticmethod
     def _chunk(

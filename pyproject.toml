@@ -28,6 +28,8 @@ dependencies = [
     # Host-owned per-request traces (RH3-01); already resolved via the engine.
     "opentelemetry-sdk>=1.43,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.43,<2",
+    # Command/Interrupt for AG-UI resume (RH3-02); already resolved via the engine.
+    "langgraph>=1.0,<2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.10",

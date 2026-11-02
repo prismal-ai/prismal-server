@@ -27,6 +27,7 @@ from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
 from prismal_server.fake import (
+    FakeCheckpoint,
     FakeGraph,
     FakeHeaderMiddleware,
     FakeSummaries,
@@ -96,9 +97,10 @@ def create_app(
     if settings.host_fake_llm_mode:
         # SPEC-RH2-FAK-001: engine test runtimes + the deterministic script.
         summaries = FakeSummaries()
+        checkpoint = FakeCheckpoint()
 
         async def fake_graph_factory(*, tool_provider: Any = None) -> Any:
-            return FakeGraph(summaries)
+            return FakeGraph(summaries, checkpoint)
 
         registry = registry or RuntimeRegistry(settings, builder=fake_builder)
         graph_factory = graph_factory or fake_graph_factory
