@@ -23,7 +23,8 @@ import asyncio
 import logging
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from prismal.agents.graph import get_async_compiled_graph
@@ -98,6 +99,20 @@ class _Entry:
     fingerprint: TenantFingerprint | None
     leases: int = 0
     retired: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_used_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(frozen=True)
+class TenantInfo:
+    """Admin view of one tenant (SPEC-RH2-ADM-002); never carries secrets."""
+
+    org_id: str | None
+    live: bool
+    configured: bool
+    runtime: Any = None
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
 
 
 class Lease:
@@ -177,6 +192,33 @@ class RuntimeRegistry:
         except TenantConfigInvalid:
             return False
 
+    @property
+    def max_tenants(self) -> int:
+        return self._max_tenants
+
+    async def tenants(self) -> list[TenantInfo]:
+        """Live runtimes plus tenants with a ``tenant.yaml`` (admin listing)."""
+        configured: set[str] = set()
+        if self._tenant_config is not None:
+            configured = set(await asyncio.to_thread(self._tenant_config.org_ids))
+        rows = [
+            TenantInfo(
+                org_id=e.org_id,
+                live=True,
+                configured=e.org_id in configured,
+                runtime=e.runtime,
+                created_at=e.created_at,
+                last_used_at=e.last_used_at,
+            )
+            for e in self._entries.values()
+        ]
+        live = {e.org_id for e in self._entries.values()}
+        rows += [
+            TenantInfo(org_id=org, live=False, configured=True)
+            for org in sorted(configured - {o for o in live if o is not None})
+        ]
+        return rows
+
     async def _fingerprint(self, org_id: str | None) -> TenantFingerprint | None:
         if self._tenant_config is None or org_id is None:
             return None
@@ -186,6 +228,7 @@ class RuntimeRegistry:
         cached = self._entries.get(org_id)
         if cached is not None and await self._fingerprint(org_id) == cached.fingerprint:
             self._entries.move_to_end(org_id)  # mark most-recently-used
+            cached.last_used_at = datetime.now(UTC)
             return cached
         async with self._lock:
             # Double-checked: another racer may have rebuilt it while we waited.

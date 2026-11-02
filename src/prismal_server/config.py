@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AuthBackend = Literal["none", "bearer", "oidc"]
@@ -88,6 +88,16 @@ class HostSettings(BaseSettings):
     # Read-only admin endpoints (RH2-06).
     host_admin_enabled: bool = False
     host_admin_scope: str = Field(default="prismal:admin", min_length=1)
+
+    @model_validator(mode="after")
+    def _no_fake_llm_in_production(self) -> HostSettings:
+        # SPEC-RH2-FAK-001: a fake model must never answer production traffic.
+        if self.host_fake_llm_mode and self.host_environment == "production":
+            raise ValueError(
+                "host_fake_llm_mode cannot be enabled when "
+                "host_environment='production'"
+            )
+        return self
 
 
 @lru_cache

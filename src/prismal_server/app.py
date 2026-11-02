@@ -26,7 +26,13 @@ from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
 from prismal_server.errors import register_exception_handlers
-from prismal_server.routes import a2a, agui, health, threads, usage, ws
+from prismal_server.fake import (
+    FakeGraph,
+    FakeHeaderMiddleware,
+    FakeSummaries,
+    fake_builder,
+)
+from prismal_server.routes import a2a, admin, agui, health, threads, usage, ws
 from prismal_server.usage.store import UsageStore, build_usage_store
 from prismal_server.usage.summary import RunSummaryLookup, default_run_summary
 
@@ -85,6 +91,16 @@ def create_app(
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
+    if settings.host_fake_llm_mode:
+        # SPEC-RH2-FAK-001: engine test runtimes + the deterministic script.
+        summaries = FakeSummaries()
+
+        async def fake_graph_factory(*, tool_provider: Any = None) -> Any:
+            return FakeGraph(summaries)
+
+        registry = registry or RuntimeRegistry(settings, builder=fake_builder)
+        graph_factory = graph_factory or fake_graph_factory
+        run_summary = run_summary or summaries
     registry = registry or RuntimeRegistry(settings)
     graph_factory = graph_factory or _default_graph_factory
     agent_card_builder = agent_card_builder or _default_agent_card_builder
@@ -123,11 +139,14 @@ def create_app(
     app.state.a2a_engine_settings = a2a_engine_settings
 
     register_exception_handlers(app)
+    if settings.host_fake_llm_mode:
+        app.add_middleware(FakeHeaderMiddleware)  # SPEC-RH2-FAK-003
     app.include_router(health.router)
     app.include_router(threads.router)
     app.include_router(a2a.router)
     app.include_router(usage.router)
     app.include_router(agui.router)
+    app.include_router(admin.router)  # 404 unless host_admin_enabled (ADM-001)
     if settings.host_ws_enabled:  # SPEC-RH2-WSK-001
         app.include_router(ws.router)
     # Tenant-scoped A2A routes match `{base}/{tenant}`: registered last so every

@@ -243,6 +243,18 @@ class TenantConfigProvider:
             raise TenantConfigInvalid(org_id, "org_id is not a safe directory name")
         return self._root / org_id / TENANT_FILE
 
+    def org_ids(self) -> list[str]:
+        """Org ids with a ``tenant.yaml`` under the root (sorted; never raises)."""
+        try:
+            children = list(self._root.iterdir())
+        except OSError:
+            return []
+        return sorted(
+            child.name
+            for child in children
+            if _ORG_ID_RE.fullmatch(child.name) and (child / TENANT_FILE).is_file()
+        )
+
     def fingerprint(self, org_id: str) -> TenantFingerprint | None:
         """Change-detection token; ``None`` when the tenant has no config file."""
         path = self._tenant_file(org_id)
