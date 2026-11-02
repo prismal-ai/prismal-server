@@ -22,6 +22,11 @@ All notable changes to `prismal-server`. The format follows
   [`specs/host-v0.3-agui-resume/`](./specs/host-v0.3-agui-resume/)). `POST /v1/agui`
   accepts AG-UI 1.0 `RunAgentInput.resume` (`ResumeEntry[]`) and resumes the thread's
   pending interrupts with `Command(resume={interruptId: payload})`.
+  - Interrupt ids are opaque, `"<engine id>.<checkpoint_id>"`. LangGraph reuses one id
+    across a node's interrupts, so the checkpoint suffix stops a retried answer from
+    approving the next prompt.
+  - Resume runs are not cancelled on client disconnect. The approved step finishes in
+    the background.
   - New refusals: `409 no_pending_interrupt` (this includes retries), `409 resume_in_progress`,
     `422 invalid_resume`, `422 unsupported_resume` (`cancelled`).
   - Fake mode gains a `/interrupt <message>` script.

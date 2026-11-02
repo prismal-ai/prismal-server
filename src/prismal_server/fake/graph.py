@@ -70,19 +70,35 @@ class FakeSummaries:
 
 @dataclass
 class FakeCheckpoint:
-    """Pending interrupts per engine thread key (the fake ``aget_state``)."""
+    """The fake checkpointer: pending interrupts and a checkpoint id per thread.
+
+    Like LangGraph, every finished run writes a new checkpoint, and an
+    interrupt stays pending until the resumed run completes. ``repeat`` makes
+    the resumed node interrupt again with the **same** id (a node that calls
+    ``interrupt()`` in a loop, like the engine's CUA approval loop).
+    """
 
     pending: dict[str, tuple[Interrupt, ...]] = field(default_factory=dict)
+    repeat: dict[str, int] = field(default_factory=dict)
+    commits: dict[str, int] = field(default_factory=dict)
     _count: int = 0
 
-    def interrupt(self, thread_id: str, message: str) -> Interrupt:
+    def interrupt(self, thread_id: str, message: str, *, repeat: int = 0) -> Interrupt:
         self._count += 1
         intr = Interrupt(
             value={"reason": "input_required", "message": message},
             id=f"fake-int-{self._count}",
         )
         self.pending[thread_id] = (intr,)
+        self.repeat[thread_id] = repeat
         return intr
+
+    def commit(self, thread_id: str) -> None:
+        self.commits[thread_id] = self.commits.get(thread_id, 0) + 1
+
+    def checkpoint_id(self, thread_id: str) -> str | None:
+        n = self.commits.get(thread_id, 0)
+        return f"fake-ckpt-{n}" if n else None
 
 
 @dataclass
@@ -121,7 +137,14 @@ class FakeGraph:
 
     async def aget_state(self, config: Any) -> Any:
         thread_id = config["configurable"]["thread_id"]
-        return SimpleNamespace(interrupts=self.checkpoint.pending.get(thread_id, ()))
+        configurable = {
+            "thread_id": thread_id,
+            "checkpoint_id": self.checkpoint.checkpoint_id(thread_id),
+        }
+        return SimpleNamespace(
+            interrupts=self.checkpoint.pending.get(thread_id, ()),
+            config={"configurable": configurable},
+        )
 
     def astream(
         self, graph_input: Any, config: Any, *, stream_mode: Any = None
@@ -133,22 +156,29 @@ class FakeGraph:
     ) -> AsyncIterator[Any]:
         thread_id = config["configurable"]["thread_id"]
         meta = {"langgraph_node": "agent"}
+        cp = self.checkpoint
         if isinstance(graph_input, Command):
-            self.checkpoint.pending.pop(thread_id, None)
             text = "resumed: " + json.dumps(graph_input.resume, sort_keys=True)
             async for chunk in self._echo(text, tagged=tagged, meta=meta):
                 yield chunk
+            if cp.repeat.get(thread_id, 0) > 0:  # same node interrupts again
+                cp.repeat[thread_id] -= 1
+                if tagged:
+                    yield ("updates", {"__interrupt__": cp.pending[thread_id]})
+            else:  # consumed only when the resumed run completes
+                cp.pending.pop(thread_id, None)
+            cp.commit(thread_id)
             self.summaries.record(thread_id)
             return
         text = _last_user_text(graph_input)
-        if text.startswith("/interrupt "):
-            intr = self.checkpoint.interrupt(
-                thread_id, text.removeprefix("/interrupt ")
-            )
-            if tagged:
-                yield ("updates", {"__interrupt__": (intr,)})
-            self.summaries.record(thread_id)
-            return
+        for script, repeat in (("/interrupt ", 0), ("/interrupt2 ", 1)):
+            if text.startswith(script):
+                intr = cp.interrupt(thread_id, text.removeprefix(script), repeat=repeat)
+                if tagged:
+                    yield ("updates", {"__interrupt__": (intr,)})
+                cp.commit(thread_id)
+                self.summaries.record(thread_id)
+                return
         if text.strip() == "/error":
             raise FakeScriptError()
         if text.startswith("/tool "):
@@ -159,6 +189,7 @@ class FakeGraph:
                 ECHO_PREFIX + text[:ECHO_MAX_CHARS], tagged=tagged, meta=meta
             ):
                 yield chunk
+        cp.commit(thread_id)
         self.summaries.record(thread_id)
 
     async def _echo(

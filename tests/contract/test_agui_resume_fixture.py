@@ -35,7 +35,7 @@ RUNS: list[dict[str, Any]] = [
         "messages": [],
         "resume": [
             {
-                "interruptId": "fake-int-1",
+                "interruptId": "fake-int-1.fake-ckpt-1",
                 "status": "resolved",
                 "payload": {"action": "approve"},
             }

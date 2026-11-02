@@ -92,15 +92,29 @@ interrupt is answered, and no unknown id appears.
 
 ### 3.3 Idempotency
 
-A retried resume finds the interrupts it answered already consumed in the checkpoint
-and gets `409 no_pending_interrupt`. If the resumed run interrupts again, the new
-interrupts have new ids, so the old entries are `invalid_resume`. This holds across
-replicas because it rests only on the checkpoint. The host keeps no per-`runId` state.
+**Fenced ids (final-review C1).** LangGraph derives `Interrupt.id` from the task's
+checkpoint namespace, so every `interrupt()` of one node invocation has the **same** id.
+The engine's CUA node does exactly this: it loops and asks for approval for every
+high-risk action. A retried "approve" would then answer the *next* action.
+
+To prevent that, the host hands out opaque ids `"<engine id>.<checkpoint_id>"`:
+- When a run ends with interrupts, the host reads the thread's current `checkpoint_id`
+  (`aget_state`) and suffixes each `RUN_FINISHED.outcome.interrupts[].id` with it.
+  It does this on the per-run `AgUiContext.interrupts` list that the host owns.
+- On resume, every entry must carry the live checkpoint id. Otherwise the run has
+  moved on and the response is `409 no_pending_interrupt`. An id without a fence is
+  `422 invalid_resume`.
+- The engine ids are what go into `Command(resume=…)`.
+
+A retried resume therefore gets `409 no_pending_interrupt`: either its interrupts are
+consumed, or the fence no longer matches. This holds across replicas because it rests
+only on the checkpoint, and the host keeps no per-`runId` state. Once the engine emits
+ids unique per occurrence (ENGINE-PROMPT §6), the fence becomes redundant but harmless.
 
 **Concurrent resumes.** Two resumes of the same thread arriving together could both
 pass the checkpoint check, and an approved action would then run twice. The host holds
 an in-process claim per engine thread from validation until the turn's runtime lease is
-released (stream end, error, refusal or the response backstop). A second resume
+released. For a resume, that is after the graph has finished (§3.6). A second resume
 meanwhile gets `409 resume_in_progress`. This was raised by the security review; a
 `checkpoint_id` pin was rejected because LangGraph forks from the given checkpoint
 instead of refusing. **Remaining gap:** the claim is per process, so multi-replica
@@ -116,6 +130,25 @@ with `RUN_FINISHED` (`success`, or `interrupt` again) or `RUN_ERROR`.
 
 The span gains `prismal.agui.resume = true` and `prismal.agui.resume_count = N`. Refusals
 fail the span with the codes above.
+
+### 3.6 Disconnects during a resume (final-review I1)
+
+A resumed node may already have had side effects (an approved tool call), and its
+interrupt stays pending until the superstep commits. Cancelling the graph on a
+client disconnect would therefore let a retry run the node again.
+
+Resume runs are **not cancelled on disconnect**:
+- The pump drains in the background and the graph runs to completion. Its output is
+  discarded, and the result lives in the checkpoint.
+- The runtime lease, and with it the resume claim, is held until the graph task is
+  done (`Lease.hold_until`). A retry gets `409 resume_in_progress` meanwhile and
+  `409 no_pending_interrupt` afterwards.
+- The turn's span ends as `cancelled`, as for any disconnect. The usage record is not
+  written, because the host never sees `done`.
+- Plain turns keep the v0.2 behaviour (cancel within the disconnect).
+
+This overrides, for resume runs only, the original I1-B criterion "cancel within 1 s
+on disconnect". The user chose it.
 
 ## 4. Design decisions
 

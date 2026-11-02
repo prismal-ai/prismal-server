@@ -84,7 +84,12 @@ def _text(events: list[dict[str, Any]]) -> str:
     return "".join(e["delta"] for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
 
 
-def _resolve(iid: str = "fake-int-1", payload: Any = None) -> dict[str, Any]:
+# Interrupt ids are fenced by the engine checkpoint they were raised at
+# ("<engine id>.<checkpoint_id>", DESIGN §3.3).
+FENCED = "fake-int-1.fake-ckpt-1"
+
+
+def _resolve(iid: str = FENCED, payload: Any = None) -> dict[str, Any]:
     entry: dict[str, Any] = {"interruptId": iid, "status": "resolved"}
     if payload is not None:
         entry["payload"] = payload
@@ -104,7 +109,7 @@ async def test_interrupt_then_resume() -> None:
     w = World()
     async with w.client() as c:
         iid = await _interrupt(c)
-        assert iid == "fake-int-1"
+        assert iid == FENCED
         resp = await c.post(
             "/v1/agui",
             json=_input(resume=[_resolve(iid, {"action": "approve"})], run_id="r-2"),
@@ -124,12 +129,15 @@ async def test_interrupt_then_resume() -> None:
     [
         (
             True,
-            [{"interruptId": "fake-int-1", "status": "cancelled"}],
+            [{"interruptId": FENCED, "status": "cancelled"}],
             422,
             "unsupported_resume",
         ),
         (False, [_resolve()], 409, "no_pending_interrupt"),
         (True, [_resolve("nope")], 422, "invalid_resume"),
+        (True, [_resolve("fake-int-1")], 422, "invalid_resume"),  # unfenced
+        (True, [_resolve("fake-int-1.fake-ckpt-0")], 409, "no_pending_interrupt"),
+        (True, [_resolve("other.fake-ckpt-1")], 422, "invalid_resume"),
         (True, [_resolve(), _resolve()], 422, "invalid_resume"),
     ],
 )
@@ -253,6 +261,13 @@ async def test_concurrent_resume_is_409_in_progress() -> None:
     assert app.state.resume_claims == set()  # claim freed with the lease
 
 
+async def _settle() -> None:
+    import asyncio
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
 async def _open_resume_turn(app: Any) -> Any:
     from prismal_server.routes.threads import ResumeEntry, open_turn
 
@@ -263,7 +278,7 @@ async def _open_resume_turn(app: Any) -> Any:
         role="user",
         content="",
         agui=True,
-        resume=[ResumeEntry(interruptId="fake-int-1", status="resolved")],
+        resume=[ResumeEntry(interruptId=FENCED, status="resolved")],
     )
 
 
@@ -274,8 +289,10 @@ async def test_backstop_cancels_graph_before_freeing_claim() -> None:
     turn = await _open_resume_turn(w.app)
     assert w.app.state.resume_claims  # held while the turn is open
     await turn.release()  # the response backstop (body never iterated)
-    assert turn.pump._task.done()  # graph cancelled, not left running unclaimed
+    await turn.pump.task  # a resume run is finished, never cancelled
+    await _settle()
     assert w.app.state.resume_claims == set()
+    assert all(lease._entry is None for lease in w.leases)
 
 
 async def test_aget_state_failure_frees_claim() -> None:
@@ -301,3 +318,69 @@ async def test_aget_state_failure_frees_claim() -> None:
     assert app.state.resume_claims == set()
     (s,) = mem.get_finished_spans()
     assert dict(s.attributes or {})["error.type"] == "internal_error"
+
+
+async def test_retry_after_same_node_reinterrupts_is_409() -> None:
+    """A node that interrupts twice reuses the engine id (CUA approval loop)."""
+    w = World()
+    async with w.client() as c:
+        resp = await c.post("/v1/agui", json=_input(text="/interrupt2 step?"))
+        (fin,) = [e for e in _events(resp) if e["type"] == "RUN_FINISHED"]
+        (first,) = fin["outcome"]["interrupts"]
+        body = _input(resume=[_resolve(first["id"], "yes")], run_id="r-2")
+        ok = await c.post("/v1/agui", json=body)
+        (fin2,) = [e for e in _events(ok) if e["type"] == "RUN_FINISHED"]
+        (second,) = fin2["outcome"]["interrupts"]
+        retry = await c.post("/v1/agui", json=body)  # dropped response, re-sent
+    assert first["id"].split(".")[0] == second["id"].split(".")[0]  # same engine id
+    assert first["id"] != second["id"]  # different fence
+    assert retry.status_code == 409
+    assert retry.json()["error"]["code"] == "no_pending_interrupt"
+
+
+async def test_disconnect_does_not_cancel_resume() -> None:
+    import asyncio
+
+    from langgraph.types import Command
+
+    from prismal_server.fake import FakeCheckpoint, FakeGraph, FakeSummaries
+
+    gate = asyncio.Event()
+    summaries, checkpoint = FakeSummaries(), FakeCheckpoint()
+
+    class SlowResume(FakeGraph):
+        async def _run(self, graph_input: Any, config: Any, *, tagged: bool) -> Any:
+            if isinstance(graph_input, Command):
+                await gate.wait()
+            async for chunk in super()._run(graph_input, config, tagged=tagged):
+                yield chunk
+
+    async def factory(*, tool_provider: Any = None) -> Any:
+        return SlowResume(summaries, checkpoint)
+
+    app = create_app(
+        settings=HostSettings(host_fake_llm_mode=True), graph_factory=factory
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        await _interrupt(c)
+    turn = await _open_resume_turn(app)
+    await turn.aclose()  # what a client disconnect does to the turn
+    await _settle()
+    assert not turn.pump.task.done()  # the approved node keeps running
+    assert app.state.resume_claims  # and a retry is still refused meanwhile
+    gate.set()
+    await turn.pump.task
+    await _settle()
+    assert app.state.resume_claims == set()
+    assert checkpoint.pending == {}  # the interrupt was consumed by the run
+
+
+async def test_non_resume_turn_still_cancelled_on_close() -> None:
+    w = World()
+    from prismal_server.routes.threads import open_turn
+
+    turn = await open_turn(
+        w.app.state, org_id=None, thread_id="t-9", role="user", content="hi", agui=True
+    )
+    await turn.aclose()
+    assert turn.pump.task.done()

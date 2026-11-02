@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -31,6 +31,7 @@ from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import Lease, release_after
 from prismal_server.errors import is_budget_exceeded
 from prismal_server.streaming import (
+    INTERRUPT_FENCE_SEP,
     STREAM_PROTOCOL_HEADER,
     ChunkPump,
     DoneHook,
@@ -165,10 +166,29 @@ async def _resume_input(
     pending = {intr.id for intr in getattr(snapshot, "interrupts", ())}
     if not pending:
         raise NoPendingInterrupt()
-    ids = [entry.interrupt_id for entry in resume]
+    # Client ids are "<engine id>.<checkpoint_id>" (streaming._fence_interrupts):
+    # LangGraph reuses an id across one node's interrupts, so only the fence
+    # tells a retry apart from an answer to the node's next interrupt.
+    parsed = [entry.interrupt_id.rpartition(INTERRUPT_FENCE_SEP) for entry in resume]
+    if any(not sep or not engine_id for engine_id, sep, _ in parsed):
+        raise InvalidResume()
+    if any(fence != _checkpoint_id(snapshot) for _, _, fence in parsed):
+        raise NoPendingInterrupt()  # answered already: the run has moved on
+    ids = [engine_id for engine_id, _, _ in parsed]
     if len(ids) != len(set(ids)) or set(ids) != pending:
         raise InvalidResume()
-    return Command(resume={entry.interrupt_id: entry.payload for entry in resume})
+    return Command(
+        resume={
+            engine_id: e.payload
+            for (engine_id, _, _), e in zip(parsed, resume, strict=True)
+        }
+    )
+
+
+def _checkpoint_id(snapshot: Any) -> str | None:
+    configurable = (getattr(snapshot, "config", None) or {}).get("configurable", {})
+    value = configurable.get("checkpoint_id")
+    return value if isinstance(value, str) else None
 
 
 class ProtocolNotEnabled(Exception):
@@ -221,7 +241,9 @@ class Turn:
         run_id: str | None,
         heartbeat_s: float,
         span: TurnSpan | None = None,
+        fence: Callable[[], Awaitable[str | None]] | None = None,
     ) -> None:
+        self._fence = fence
         self.span = span
         self.lease = lease
         self.pump = pump
@@ -250,6 +272,7 @@ class Turn:
             summary_for=self._probe.summary,
             on_done=self._record_usage,
             span=self.span,
+            fence=self._fence,
         )
 
     def sse_body(self) -> AsyncIterator[str]:
@@ -269,6 +292,7 @@ class Turn:
             summary_for=self._probe.summary,
             on_done=self._record_usage,
             span=self.span,
+            fence=self._fence,
         )
 
     def _agui_context(self) -> AgUiContext:
@@ -368,7 +392,15 @@ async def open_turn(
             pump = ChunkPump(
                 graph.astream(graph_input, config, stream_mode=stream_mode),
                 maxsize=pump_maxsize,
+                # A resume never stops mid-node on disconnect (DESIGN §3.6).
+                detach_on_close=bool(resume),
             )
+            if resume:  # the lease (and resume claim) outlives the response
+                lease.hold_until(pump.task)
+
+        async def fence() -> str | None:
+            return _checkpoint_id(await graph.aget_state(config))
+
     except BaseException:
         await lease.release()
         raise
@@ -383,6 +415,7 @@ async def open_turn(
         run_id=run_id,
         heartbeat_s=settings.sse_heartbeat_s,
         span=span,
+        fence=fence if agui else None,
     )
 
 

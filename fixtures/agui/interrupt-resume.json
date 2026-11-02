@@ -54,7 +54,7 @@
             "type": "interrupt",
             "interrupts": [
               {
-                "id": "fake-int-1",
+                "id": "fake-int-1.fake-ckpt-1",
                 "reason": "input_required",
                 "message": "Approve the plan?",
                 "metadata": {
@@ -88,7 +88,7 @@
         "messages": [],
         "resume": [
           {
-            "interruptId": "fake-int-1",
+            "interruptId": "fake-int-1.fake-ckpt-1",
             "status": "resolved",
             "payload": {
               "action": "approve"
