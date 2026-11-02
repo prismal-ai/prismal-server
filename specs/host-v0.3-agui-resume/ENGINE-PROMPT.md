@@ -77,15 +77,9 @@ WebSocket transport.
   refused with `422 unsupported_resume` until then.
 - Extend the fixture with a client tool round-trip.
 
-## Separate engine issue: the cached graph's checkpointer is never closed
+## Cached graph checkpointer (resolved in the engine)
 
-`prismal.agents.graph.get_async_compiled_graph()` caches a module-level compiled graph.
-Its `AsyncSqliteSaver` holds an `aiosqlite` connection, which runs on a **non-daemon**
-thread, and there is no public way to close it. A process that ever called it
-(prismal-server's default runtime builder does) cannot exit until that thread stops:
-after uvicorn's lifespan shutdown the interpreter waits on it, so a container needs
-SIGKILL.
-
-The host's contract suite works around this in `tests/contract/conftest.py`. Ask the
-engine for an `aclose_async_compiled_graph()` (or for the cached graph's checkpointer
-to be owned by `RuntimeContext`), so the host can call it in its lifespan shutdown.
+`get_async_compiled_graph()` kept a non-daemon `aiosqlite` thread open, so the
+process could not exit. This is **already fixed in prismal-ai 3.20.0** (commit
+`23a35c0`, `aclose_async_compiled_graph()`). The host side is in
+[HOST-PROMPT-engine-3.20.md](./HOST-PROMPT-engine-3.20.md).
