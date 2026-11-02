@@ -4,6 +4,25 @@ All notable changes to `prismal-server`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Per-request OpenTelemetry traces** (RH3-01, spec
+  [`specs/host-v0.3-otel-traces/`](./specs/host-v0.3-otel-traces/)). Off by default
+  (`PRISMAL_SERVER_HOST_OTEL_ENABLED`). Each SSE, AG-UI and WebSocket turn and each
+  message-sending A2A RPC exports one GenAI `invoke_agent` root span over OTLP/HTTP.
+  The span carries token usage from `done.usage`, the outcome (`error.type` holds the
+  host error code) and the duration up to the terminal event. Engine spans nest under
+  it. No content and no secrets are exported. See [`docs/tracing.md`](./docs/tracing.md).
+- Explicit dependencies `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`
+  (`>=1.43,<2`; both were already resolved transitively).
+
+### Changed
+
+- `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
+  unauthenticated request with an invalid body now gets `401` instead of `422`.
+
 ## [0.2.0] — 2026-11-02
 
 Host v0.2: usage, gateways and AG-UI. Spec:

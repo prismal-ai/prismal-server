@@ -149,8 +149,8 @@
 
 | ID | Task | Status |
 |---|---|---|
-| RH3-01-01 | Settings, tracing core, lifecycle | `TODO` |
-| RH3-01-02 | HTTP turns (native + AG-UI) | `TODO` |
-| RH3-01-03 | WebSocket turns | `TODO` |
-| RH3-01-04 | A2A message-sending RPCs | `TODO` |
-| RH3-01-05 | Wire contract, docs, changelog | `TODO` |
+| RH3-01-01 | Settings, tracing core, lifecycle | `DONE` |
+| RH3-01-02 | HTTP turns (native + AG-UI) | `DONE` |
+| RH3-01-03 | WebSocket turns | `DONE` |
+| RH3-01-04 | A2A message-sending RPCs | `DONE` |
+| RH3-01-05 | Wire contract, docs, changelog | `DONE` |

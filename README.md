@@ -76,6 +76,7 @@ curl localhost:8000/healthz
 | [`docs/websocket.md`](./docs/websocket.md) | WebSocket frames, close codes, handshake auth |
 | [`docs/a2a.md`](./docs/a2a.md) | Inbound A2A: Agent Card, v0.3/v1.0 dual stack, tenant routes |
 | [`docs/admin.md`](./docs/admin.md) | Admin read endpoints and their scopes |
+| [`docs/tracing.md`](./docs/tracing.md) | Per-request OpenTelemetry traces (agentlens): tokens, errors, duration |
 | [`docs/fake-mode.md`](./docs/fake-mode.md) | Deterministic fake-LLM mode for contract tests |
 
 ## The contract with the engine
