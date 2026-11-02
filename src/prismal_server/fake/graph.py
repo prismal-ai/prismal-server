@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from prismal.composition.runtime import build_test_runtime
+from prismal.composition import build_test_runtime
 
 ECHO_PREFIX = "echo: "
 ECHO_MAX_CHARS = 200

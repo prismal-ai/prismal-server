@@ -21,7 +21,7 @@ from typing import Any, cast
 from fastapi import FastAPI
 from prismal.agents.graph import get_async_compiled_graph
 
-from prismal_server import __version__
+from prismal_server import __version__, openapi_examples
 from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
@@ -139,6 +139,7 @@ def create_app(
     app.state.a2a_engine_settings = a2a_engine_settings
 
     register_exception_handlers(app)
+    openapi_examples.install(app)  # RH2-07-03: examples served verbatim
     if settings.host_fake_llm_mode:
         app.add_middleware(FakeHeaderMiddleware)  # SPEC-RH2-FAK-003
     app.include_router(health.router)

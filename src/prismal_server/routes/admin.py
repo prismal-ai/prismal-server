@@ -1,7 +1,8 @@
 """Admin read endpoints (RH2-06-03/04/06/07, SPEC-RH2-ADM-001..005).
 
-``/v1/admin/*`` is ``404`` unless ``host_admin_enabled``; otherwise the caller's
-identity must hold ``host_admin_scope`` or gets ``403`` before any engine call.
+``/v1/admin/*`` is ``404 admin_disabled`` unless ``host_admin_enabled``; otherwise
+the caller's identity must hold ``host_admin_scope`` or gets ``403`` before any
+engine call.
 
 Tenant targeting is fail-closed and identity-only (``X-Org-Id`` is ignored): an
 admin reads its own org; any other ``org_id`` — and ``*`` or an identity
@@ -22,8 +23,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
+from prismal_server import openapi_examples as ex
 from prismal_server.auth import authenticate
 from prismal_server.routes.usage import InvalidWindow, parse_ts
 from prismal_server.usage.models import rfc3339
@@ -32,6 +34,13 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 ALL_ORGS = "*"
 DEFAULT_REPORT_WINDOW = timedelta(days=7)
+
+
+class AdminDisabled(Exception):
+    """404 ``admin_disabled``: ``host_admin_enabled`` is off (the default)."""
+
+    def __init__(self) -> None:
+        super().__init__("admin endpoints are disabled")
 
 
 class AdminForbidden(Exception):
@@ -70,7 +79,7 @@ async def admin_caller(request: Request) -> AdminCaller:
     """The ADM-001 gate: 404 when disabled, 403 without the admin scope."""
     settings = request.app.state.settings
     if not settings.host_admin_enabled:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise AdminDisabled()
     identity = await authenticate(request)  # 401 in strict mode
     scope = settings.host_admin_scope
     if identity is None or not _has_scope(identity, scope):
@@ -106,7 +115,7 @@ def _report_window(since: str | None, until: str | None) -> tuple[datetime, date
     return start, end
 
 
-@router.get("/tenants")
+@router.get("/tenants", responses=ex.ADMIN_TENANTS)
 async def list_tenants(request: Request, caller: Caller) -> dict[str, Any]:
     """Live and configured tenants; a non-global admin sees only its own org."""
     registry = request.app.state.registry
@@ -136,7 +145,7 @@ async def list_tenants(request: Request, caller: Caller) -> dict[str, Any]:
     return {"tenants": rows, "max_tenants": registry.max_tenants}
 
 
-@router.get("/audit")
+@router.get("/audit", responses=ex.ADMIN_AUDIT)
 async def audit(
     request: Request,
     caller: Caller,
@@ -161,7 +170,7 @@ async def audit(
     return {**_jsonable(view), "chain": _jsonable(chain)}
 
 
-@router.get("/decisions")
+@router.get("/decisions", responses=ex.ADMIN_DECISIONS)
 async def decisions(
     request: Request,
     caller: Caller,
@@ -186,7 +195,7 @@ async def decisions(
     }
 
 
-@router.get("/routing")
+@router.get("/routing", responses=ex.ADMIN_ROUTING)
 async def routing(
     request: Request,
     caller: Caller,

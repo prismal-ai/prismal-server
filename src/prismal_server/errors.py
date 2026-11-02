@@ -43,6 +43,7 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "InvalidThreadId": (422, "invalid_thread_id"),  # routes/threads.py
     "ProtocolNotEnabled": (406, "protocol_not_enabled"),  # routes/threads.py
     "InvalidAgUiInput": (422, "invalid_input"),  # routes/agui.py
+    "AdminDisabled": (404, "admin_disabled"),  # routes/admin.py
     "AdminForbidden": (403, "forbidden"),  # routes/admin.py
     "FakeScriptError": (500, "internal_error"),  # fake/graph.py (`/error`)
 }

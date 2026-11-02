@@ -161,6 +161,8 @@ async def test_admin_routes_404_when_disabled(path: str) -> None:
     async with world.client() as c:
         resp = await c.get(path, headers=GLOBAL)
     assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "admin_disabled"  # SPEC-RH2 §11
+    assert world.engine_calls() == []
 
 
 @pytest.mark.parametrize("path", PATHS)

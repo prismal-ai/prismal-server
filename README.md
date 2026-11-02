@@ -11,14 +11,14 @@ missing process that binds a port, boots the engine once, and serves it — whil
 
 ## Status
 
-**v0.1 — reference host bootstrap complete.** The streaming chat surface, inbound
-A2A, the auth/tenancy seams, health/readiness, and the release plumbing (image,
-contract suite, import guard) are in place. The full SDD lives under
-[`specs/reference-host-bootstrap/`](./specs/reference-host-bootstrap/)
-([`PLAN`](./specs/reference-host-bootstrap/PLAN.md) ·
-[`ARCHITECTURE`](./specs/reference-host-bootstrap/ARCHITECTURE.md) ·
-[`SPEC`](./specs/reference-host-bootstrap/SPEC.md) ·
-[`TASKS`](./specs/reference-host-bootstrap/TASKS.md)).
+**v0.2: usage, gateways and AG-UI.** On top of the v0.1 host (streaming chat,
+inbound A2A, auth/tenancy seams, health, release plumbing), v0.2 adds per-tenant
+engine config and gateways, `done.usage` plus `/v1/usage` and `/v1/budget`, AG-UI 1.0
+streaming, the A2A v1.0 dual stack, an opt-in WebSocket transport, a deterministic
+fake-LLM mode and read-only admin endpoints. Specs:
+[`specs/reference-host-bootstrap/`](./specs/reference-host-bootstrap/) (v0.1) and
+[`specs/host-v0.2-usage-gateways-agui/`](./specs/host-v0.2-usage-gateways-agui/)
+(v0.2). Release notes are in [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## Quickstart
 
@@ -49,16 +49,20 @@ curl localhost:8000/healthz
 > store) — the first build is large and slow. See
 > [`docs/running.md`](./docs/running.md).
 
-## HTTP surface (v0.1)
+## HTTP surface
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/healthz` · `/readyz` | Liveness / readiness |
 | `POST` | `/threads` | Mint a new `thread_id` |
-| `POST` | `/threads/{id}/messages` | Stream a chat turn (SSE: `token`/`tool_call`/`state`/`done`/`error`) |
-| `GET` | `/.well-known/agent-card.json` | A2A Agent Card |
-| `POST` | `/a2a` | A2A JSON-RPC / SSE (delegates to `A2AServerHandler`) |
-| `GET` | `/openapi.json` | OpenAPI (for `prismal-sdk` generation) |
+| `POST` | `/threads/{id}/messages` | Stream a chat turn (SSE: `token`/`tool_call`/`state`/`done`/`error`; `?protocol=ag-ui` for AG-UI) |
+| `POST` | `/v1/agui` | AG-UI `RunAgentInput` → AG-UI event stream |
+| `GET` | `/ws/threads/{id}` | WebSocket chat (opt-in, `host_ws_enabled`) |
+| `GET` | `/v1/usage` · `/v1/budget` | Per-turn usage history · budget status and gateway quotas |
+| `GET` | `/v1/admin/{tenants,audit,decisions,routing}` | Admin read endpoints (opt-in, admin scope) |
+| `GET` | `/.well-known/agent-card.json` | A2A Agent Card (`?protocolVersion=0.3\|1.0`) |
+| `POST` | `/a2a` · `{base}/{tenant}` | A2A JSON-RPC / SSE, v0.3 and v1.0 (delegates to `A2AServerHandler`) |
+| `GET` | `/openapi.json` | OpenAPI with examples (for `prismal-sdk` generation) |
 
 ## Docs
 
@@ -66,19 +70,27 @@ curl localhost:8000/healthz
 |---|---|
 | [`docs/running.md`](./docs/running.md) | Local run, Docker/compose, config, health/readiness |
 | [`docs/auth.md`](./docs/auth.md) | The auth seam: `none` / `bearer` / `oidc`, strict mode |
-| [`docs/tenancy.md`](./docs/tenancy.md) | `org_id` resolution, per-tenant runtimes, the LRU cap |
-| [`docs/a2a.md`](./docs/a2a.md) | Inbound A2A: Agent Card + JSON-RPC/SSE |
+| [`docs/tenancy.md`](./docs/tenancy.md) | `org_id` resolution (fail-closed), per-tenant runtimes, `tenant.yaml` and secrets |
+| [`docs/usage.md`](./docs/usage.md) | `done.usage`, `/v1/usage`, `/v1/budget`, `402 budget_exceeded` |
+| [`docs/agui.md`](./docs/agui.md) | AG-UI stream mode and `POST /v1/agui` |
+| [`docs/websocket.md`](./docs/websocket.md) | WebSocket frames, close codes, handshake auth |
+| [`docs/a2a.md`](./docs/a2a.md) | Inbound A2A: Agent Card, v0.3/v1.0 dual stack, tenant routes |
+| [`docs/admin.md`](./docs/admin.md) | Admin read endpoints and their scopes |
+| [`docs/fake-mode.md`](./docs/fake-mode.md) | Deterministic fake-LLM mode for contract tests |
 
 ## The contract with the engine
 
-The host uses **exactly four** entry points from `prismal` and nothing else — a
-static import-guard test enforces it (`tests/unit/test_import_guard.py`), and the
-rule + review checklist live in [`CLAUDE.md`](./CLAUDE.md):
+The host calls the engine only through its **public host read surface** (HRS §3)
+plus the v0.1 entry points. Everything else it reads is a `RuntimeContext` method.
+A static import-guard test enforces an exact per-module symbol allowlist
+(`tests/unit/test_import_guard.py`); the rule and the review checklist live in
+[`CLAUDE.md`](./CLAUDE.md).
 
-- `build_runtime(...)` → `RuntimeContext` (all ports, coordinated `aclose()`)
+- `build_runtime(...)` / `build_test_runtime(...)` → `RuntimeContext` (all ports, coordinated `aclose()`)
 - `get_async_compiled_graph(...)` → the graph to `astream()`
 - `A2AServerHandler` + `build_agent_card(...)` → inbound A2A
 - `prismal.identity` `IdentityPort` / `OidcIdentityProvider` → request → identity
+- `prismal.events.agui` (AG-UI translator) and `prismal.monitoring.get_run_summary` (usage wire)
 
 ## Development
 
@@ -91,13 +103,14 @@ uv run mypy src
 ```
 
 The unit suite runs fully offline against engine fakes (`build_test_runtime`); the
-`contract` suite boots a real `build_runtime()`, serves a real Agent Card, and —
-when an LLM provider credential is present in the environment — round-trips a full
-chat turn over SSE.
+`contract` suite boots a real `build_runtime()`, serves a real Agent Card, runs the
+v0.2 surfaces (native, AG-UI, usage, A2A v1) against the released engine in fake-LLM
+mode, and, when an LLM provider credential is present in the environment,
+round-trips a full chat turn over SSE.
 
 ## Related repos
 
-- [`prismal-ai/prismal`](https://github.com/prismal-ai/prismal) — the engine (pip dependency `prismal-ai`, pinned `>=3.10,<4`).
+- [`prismal-ai/prismal`](https://github.com/prismal-ai/prismal) — the engine (pip dependency `prismal-ai`, pinned `>=3.17,<4`).
 - [`prismal-ai/prismal-sdk`](https://github.com/prismal-ai/prismal-sdk) — thin client generated against this host's wire contract (`/openapi.json` + the A2A surface).
 
 ## License

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from prismal_server import openapi_examples as ex
 from prismal_server.routes.threads import run_turn
 
 router = APIRouter(prefix="/v1", tags=["ag-ui"])
@@ -60,7 +61,7 @@ def last_user_text(messages: list[dict[str, Any]]) -> str:
     raise InvalidAgUiInput("RunAgentInput has no user message with text content")
 
 
-@router.post("/agui")
+@router.post("/agui", responses=ex.AGUI)
 async def run_agent(body: RunAgentInput, request: Request) -> StreamingResponse:
     """Run one turn from an AG-UI ``RunAgentInput`` and stream AG-UI events."""
     content = last_user_text(body.messages)
