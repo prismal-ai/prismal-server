@@ -251,3 +251,53 @@ async def test_concurrent_resume_is_409_in_progress() -> None:
     assert second.json()["error"]["code"] == "resume_in_progress"
     assert done.status_code == 200
     assert app.state.resume_claims == set()  # claim freed with the lease
+
+
+async def _open_resume_turn(app: Any) -> Any:
+    from prismal_server.routes.threads import ResumeEntry, open_turn
+
+    return await open_turn(
+        app.state,
+        org_id=None,
+        thread_id="t-1",
+        role="user",
+        content="",
+        agui=True,
+        resume=[ResumeEntry(interruptId="fake-int-1", status="resolved")],
+    )
+
+
+async def test_backstop_cancels_graph_before_freeing_claim() -> None:
+    w = World()
+    async with w.client() as c:
+        await _interrupt(c)
+    turn = await _open_resume_turn(w.app)
+    assert w.app.state.resume_claims  # held while the turn is open
+    await turn.release()  # the response backstop (body never iterated)
+    assert turn.pump._task.done()  # graph cancelled, not left running unclaimed
+    assert w.app.state.resume_claims == set()
+
+
+async def test_aget_state_failure_frees_claim() -> None:
+    from prismal_server.fake import FakeGraph
+
+    class NoCheckpointer(FakeGraph):
+        async def aget_state(self, config: Any) -> Any:
+            raise ValueError("No checkpointer set")
+
+    async def factory(*, tool_provider: Any = None) -> Any:
+        return NoCheckpointer()
+
+    mem = InMemorySpanExporter()
+    settings = HostSettings(host_fake_llm_mode=True)
+    app = create_app(
+        settings=settings,
+        graph_factory=factory,
+        tracing=Tracing(settings, exporter=mem),
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.post("/v1/agui", json=_input(resume=[_resolve()]))
+    assert resp.status_code == 500
+    assert app.state.resume_claims == set()
+    (s,) = mem.get_finished_spans()
+    assert dict(s.attributes or {})["error.type"] == "internal_error"

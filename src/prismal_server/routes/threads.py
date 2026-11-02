@@ -290,10 +290,12 @@ class Turn:
         await self.lease.release()
 
     async def release(self) -> None:
-        """Response backstop: end the span and free the lease (idempotent)."""
-        if self.span is not None:
-            self.span.end()
-        await self.lease.release()
+        """Response backstop: end the span, stop the graph, free the lease.
+
+        Same as :meth:`aclose` (idempotent): the graph is cancelled before the
+        lease — and with it any resume claim — is released (RH3-02 review).
+        """
+        await self.aclose()
 
 
 async def open_turn(
