@@ -188,13 +188,41 @@ Phase 5 decisions (2026-10-12):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-06-01 | `host_fake_llm_mode`, production refusal, `X-Prismal-Fake-LLM` header | 0.3 d | 01-01 | FAK-001/003 | `TODO` |
-| RH2-06-02 | `fake/runtime.py` deterministic script (or engine fake model) | 0.5 d | 06-01 | FAK-002 | `TODO` |
-| RH2-06-03 | Admin gate + `GET /v1/admin/tenants` | 0.4 d | 01-04 | ADM-001/002 | `TODO` |
-| RH2-06-04 | `GET /v1/admin/audit` paging + chain status | 0.6 d | 06-03, 00-03 | ADM-003 | `TODO` |
-| RH2-06-05 | Tests: script determinism, production refusal, admin 404/403/cross-tenant | 0.3 d | 06-04 | FAK-*, ADM-* | `TODO` |
-| RH2-06-06 | `GET /v1/admin/decisions` from `decisions_report()` (+ tests: disabled, null ratio, clamped window) | 0.4 d | 06-03, 00-03 | ADM-004 | `TODO` |
-| RH2-06-07 | `GET /v1/admin/routing` from `routing_report()` (+ tests: disabled, 403, field mapping) | 0.4 d | 06-03, 00-03 | ADM-005 | `TODO` |
+| RH2-06-01 | `host_fake_llm_mode`, production refusal, `X-Prismal-Fake-LLM` header | 0.3 d | 01-01 | FAK-001/003 | `DONE` |
+| RH2-06-02 | `fake/runtime.py` deterministic script (or engine fake model) | 0.5 d | 06-01 | FAK-002 | `DONE` |
+| RH2-06-03 | Admin gate + `GET /v1/admin/tenants` | 0.4 d | 01-04 | ADM-001/002 | `DONE` |
+| RH2-06-04 | `GET /v1/admin/audit` paging + chain status | 0.6 d | 06-03, 00-03 | ADM-003 | `DONE` |
+| RH2-06-05 | Tests: script determinism, production refusal, admin 404/403/cross-tenant | 0.3 d | 06-04 | FAK-*, ADM-* | `DONE` |
+| RH2-06-06 | `GET /v1/admin/decisions` from `decisions_report()` (+ tests: disabled, null ratio, clamped window) | 0.4 d | 06-03, 00-03 | ADM-004 | `DONE` |
+| RH2-06-07 | `GET /v1/admin/routing` from `routing_report()` (+ tests: disabled, 403, field mapping) | 0.4 d | 06-03, 00-03 | ADM-005 | `DONE` |
+
+Phase 6 decisions (2026-11-02):
+- Fake mode (`host_fake_llm_mode`): runtimes come from the engine's `build_test_runtime(org_id=)`
+  (composition seam; no I/O, no gateways) and chat is served by the host `fake.FakeGraph` script.
+  The engine ships no fake chat model, so the script stands in for the compiled graph only. It
+  never touches engine logic. `build_test_runtime` takes no `config_source`, so `tenant.yaml` is
+  ignored in fake mode.
+- Production refusal is a `HostSettings` validator: `host_fake_llm_mode` with
+  `host_environment="production"` fails settings validation, so the process never starts.
+- `/error` raises `FakeScriptError`, mapped to `500 internal_error` ("fake error"); it streams as
+  the terminal `error` event once the stream has started. Usage is the fixed FAK-002 wire, with one
+  fresh `run_id` per turn, so every turn persists one usage record.
+- `X-Prismal-Fake-LLM: 1` comes from a pure ASGI middleware on `http.response.start` (SSE
+  included) and `websocket.accept`; `/readyz` is unchanged.
+- Admin router is always mounted and answers `404` while `host_admin_enabled=false`; with it on,
+  the identity needs `host_admin_scope` (else `403 forbidden`, new code) before any engine call;
+  strict mode without a credential stays `401`.
+- Admin tenant targeting is identity-only and fail-closed: `X-Org-Id` is ignored. An admin reads
+  its own org; any other `org_id`, `*`, or an identity without an org (the engine's process-wide
+  view) needs `<host_admin_scope>:global`. A non-global admin's `/tenants` lists only its own org.
+- `/v1/admin/tenants`: live registry entries (with `created_at`/`last_used_at`) plus tenants with a
+  `tenant.yaml` that are not live; `config_source` is `vault` for a configured tenant, else
+  `process`. Gateways are names only, never secrets.
+- `/v1/admin/audit`: `audit_page` and `verify_audit_chain` read the audit file, so both run in a
+  worker thread; `page` < 1 or `page_size` outside 1..200 ⇒ `422`. `decisions_report` and
+  `routing_report` aggregate the engine's in-memory stats recorders and run on the loop. Windows
+  default to the last 7 d; inverted / unparsable ⇒ `400 invalid_window` (no 31 d cap: the engine
+  clamps to its stats retention).
 
 ## Phase 7 — Hardening & release
 
@@ -257,3 +285,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.4 | 2026-10-12 | Ernesto Crespo | Phase 3 `DONE` (AG-UI) |
 | 1.5 | 2026-10-12 | Ernesto Crespo | Phase 4 `DONE` (A2A v1.0 dual stack) |
 | 1.6 | 2026-10-12 | Ernesto Crespo | Phase 5 `DONE` (WebSocket) |
+| 1.7 | 2026-11-02 | Ernesto Crespo | Phase 6 `DONE` (fake-LLM mode & admin) |

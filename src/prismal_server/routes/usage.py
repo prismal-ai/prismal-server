@@ -45,7 +45,7 @@ class InvalidCursor(Exception):
     """400 ``invalid_cursor``: not a cursor issued by this endpoint."""
 
 
-def _parse_ts(raw: str | None, name: str) -> datetime | None:
+def parse_ts(raw: str | None, name: str) -> datetime | None:
     if raw is None:
         return None
     try:
@@ -58,8 +58,8 @@ def _parse_ts(raw: str | None, name: str) -> datetime | None:
 
 
 def _window(since_raw: str | None, until_raw: str | None) -> tuple[datetime, datetime]:
-    until = _parse_ts(until_raw, "until") or datetime.now(UTC)
-    since = _parse_ts(since_raw, "since") or until - DEFAULT_WINDOW
+    until = parse_ts(until_raw, "until") or datetime.now(UTC)
+    since = parse_ts(since_raw, "since") or until - DEFAULT_WINDOW
     if since > until:
         raise InvalidWindow("`since` is after `until`")
     if until - since > MAX_WINDOW:
