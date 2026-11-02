@@ -19,14 +19,13 @@ async def test_budget_and_usage_against_real_runtime() -> None:
     settings = HostSettings()
     registry = RuntimeRegistry(settings)
     app = create_app(settings=settings, registry=registry)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as c:
-            budget = await c.get("/v1/budget", headers={"X-Org-Id": "acme"})
-            usage = await c.get("/v1/usage", headers={"X-Org-Id": "acme"})
-    finally:
-        await registry.aclose_all()
+    # The real lifespan shutdown (runtimes + engine graph, H-320).
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        budget = await c.get("/v1/budget", headers={"X-Org-Id": "acme"})
+        usage = await c.get("/v1/usage", headers={"X-Org-Id": "acme"})
     assert budget.status_code == 200
     assert budget.json()["status"] in {
         "within", "soft_exceeded", "hard_exceeded", "disabled", "unknown",

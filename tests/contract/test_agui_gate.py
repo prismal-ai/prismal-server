@@ -29,16 +29,15 @@ async def test_agui_refused_when_engine_flag_off(
     settings = HostSettings()
     registry = RuntimeRegistry(settings)
     app = create_app(settings=settings, registry=registry, graph_factory=graph_factory)
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://t"
-        ) as c:
-            resp = await c.post(
-                "/threads/t-1/messages",
-                params={"protocol": "ag-ui"},
-                json={"content": "hi"},
-            )
-    finally:
-        await registry.aclose_all()
+    # The real lifespan shutdown (runtimes + engine graph, H-320).
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        resp = await c.post(
+            "/threads/t-1/messages",
+            params={"protocol": "ag-ui"},
+            json={"content": "hi"},
+        )
     assert resp.status_code == 406
     assert resp.json()["error"]["code"] == "protocol_not_enabled"
