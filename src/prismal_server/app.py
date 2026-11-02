@@ -14,17 +14,24 @@ Seam: composition — ``build_runtime`` (via ``deps.RuntimeRegistry``).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from fastapi import FastAPI
-from prismal.agents.graph import get_async_compiled_graph
+from prismal.agents.graph import aclose_async_compiled_graph, get_async_compiled_graph
 
 from prismal_server import __version__, openapi_examples
 from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
-from prismal_server.deps import AgentCardBuilder, GraphFactory, RuntimeRegistry
+from prismal_server.deps import (
+    ENGINE_GRAPHS,
+    AgentCardBuilder,
+    GraphFactory,
+    RuntimeRegistry,
+    hold_engine_graph,
+)
 from prismal_server.errors import register_exception_handlers
 from prismal_server.fake import (
     FakeCheckpoint,
@@ -38,10 +45,28 @@ from prismal_server.tracing import Tracing
 from prismal_server.usage.store import UsageStore, build_usage_store
 from prismal_server.usage.summary import RunSummaryLookup, default_run_summary
 
+logger = logging.getLogger(__name__)
+
+GraphCloser = Callable[[], Awaitable[None]]
+
+
+async def _default_graph_closer() -> None:
+    """Close the engine's cached graph checkpointers (execution seam, H-320).
+
+    Its SQLite checkpointer runs on a non-daemon thread; left open, the
+    process cannot exit after shutdown (prismal-ai >= 3.20).
+    """
+    try:  # ENGINE_GRAPHS keeps the connections alive while they close
+        await aclose_async_compiled_graph()
+    finally:
+        ENGINE_GRAPHS.clear()
+
 
 async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
     """Obtain the compiled graph via the Execution seam."""
-    return await get_async_compiled_graph(tool_provider=tool_provider)
+    return hold_engine_graph(
+        await get_async_compiled_graph(tool_provider=tool_provider)
+    )
 
 
 def _default_agent_card_builder(
@@ -91,9 +116,14 @@ def create_app(
     run_summary: RunSummaryLookup | None = None,
     a2a_engine_settings: Any = None,
     tracing: Tracing | None = None,
+    graph_closer: GraphCloser | None = None,
 ) -> FastAPI:
     """Build the FastAPI app, optionally with injected seams (for tests)."""
     settings = settings or get_settings()
+    # Fake mode never builds the engine graph, so nothing to close by default.
+    closer = graph_closer or (
+        None if settings.host_fake_llm_mode else _default_graph_closer
+    )
     if settings.host_fake_llm_mode:
         # SPEC-RH2-FAK-001: engine test runtimes + the deterministic script.
         summaries = FakeSummaries()
@@ -122,8 +152,15 @@ def create_app(
         try:
             yield
         finally:
-            # Shutdown: release every tenant runtime (SPEC-RHB-LIF-002).
+            # Shutdown: release every tenant runtime (SPEC-RHB-LIF-002), then
+            # the engine's cached graph — after the runtimes, which close their
+            # own checkpointers first (H-320).
             await registry.aclose_all()
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception as exc:  # shutdown must complete; no message
+                    logger.warning("engine graph close failed: %s", type(exc).__name__)
             await usage_store.aclose()
             await tracing.aclose()  # bounded flush (RH3-01)
 

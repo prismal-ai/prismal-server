@@ -45,7 +45,7 @@ RAG, tool, memory, security, or policy logic here is a bug:
 - [ ] New behaviour is **test-first** (TDD): failing test → minimal code → green.
 - [ ] Unit tests use `build_test_runtime` fakes (no live provider I/O); engine
       integration goes in the opt-in `contract` suite.
-- [ ] The engine dep stays pinned `prismal-ai>=3.17,<4`.
+- [ ] The engine dep stays pinned `prismal-ai>=3.20,<4` (3.20 closes the cached graph's checkpointer, H-320).
 
 ## Common commands (once scaffolded — see TASKS RHB-00-01)
 

@@ -36,15 +36,21 @@ All notable changes to `prismal-server`. The format follows
 
 ### Fixed
 
-- The opt-in contract suite no longer hangs at interpreter exit. The engine's cached
-  compiled graph keeps a non-daemon `aiosqlite` checkpointer thread open, and the
-  suite now stops it at session end. The engine-side fix is requested in
-  `specs/host-v0.3-agui-resume/ENGINE-PROMPT.md`: a production process can still
-  wait on that thread at shutdown.
+- **The process exits cleanly on shutdown** (H-320). The lifespan now closes the
+  engine's cached graph checkpointer with `aclose_async_compiled_graph()` after the
+  tenant runtimes, so no non-daemon `aiosqlite` thread keeps the interpreter alive
+  (no more SIGKILL). A failing close is logged as a warning and shutdown still
+  completes; fake-LLM mode skips it. The opt-in contract suite therefore exits on its
+  own, and its session-end workaround (`tests/contract/conftest.py`) is removed.
+  - prismal-ai 3.20.0's close drops the cached graph *before* closing its connections,
+    so they are garbage-collected mid-close and the close hangs. The host holds the
+    graph while closing; the engine fix is requested in
+    `specs/host-v0.3-agui-resume/ENGINE-PROMPT-graph-close.md`.
 
 ### Changed
 
-- `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
+- **Engine floor raised to `prismal-ai>=3.20,<4`** (adds
+  `aclose_async_compiled_graph`, execution seam).- `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
   unauthenticated request with an invalid body now gets `401` instead of `422`.
 
 ## [0.2.0] — 2026-11-02

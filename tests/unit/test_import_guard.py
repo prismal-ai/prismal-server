@@ -27,7 +27,11 @@ HRS_SURFACE: dict[str, frozenset[str]] = {
     # 1 — composition
     "prismal.composition": frozenset({"build_runtime", "build_test_runtime"}),
     # 2 — execution
-    "prismal.agents.graph": frozenset({"get_async_compiled_graph"}),
+    # aclose_async_compiled_graph: lifespan shutdown of the same graph (H-320,
+    # prismal-ai >= 3.20; specs/host-v0.3-agui-resume/HOST-PROMPT-engine-3.20.md).
+    "prismal.agents.graph": frozenset(
+        {"get_async_compiled_graph", "aclose_async_compiled_graph"}
+    ),
     # 3 — A2A card inputs (re-exports since 3.10.2)
     "prismal.a2a": frozenset(
         {"build_agent_card", "get_settings", "DEFAULT_CAPABILITY_MAP"}

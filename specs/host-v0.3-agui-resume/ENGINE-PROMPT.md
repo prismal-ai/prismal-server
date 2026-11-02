@@ -80,6 +80,8 @@ WebSocket transport.
 ## Cached graph checkpointer (resolved in the engine)
 
 `get_async_compiled_graph()` kept a non-daemon `aiosqlite` thread open, so the
-process could not exit. This is **already fixed in prismal-ai 3.20.0** (commit
-`23a35c0`, `aclose_async_compiled_graph()`). The host side is in
-[HOST-PROMPT-engine-3.20.md](./HOST-PROMPT-engine-3.20.md).
+process could not exit. prismal-ai 3.20.0 added `aclose_async_compiled_graph()`
+(commit `23a35c0`); the host adopted it in
+[HOST-PROMPT-engine-3.20.md](./HOST-PROMPT-engine-3.20.md) (H-320, done). That
+close hangs on its own in 3.20.0; the follow-up fix is
+[ENGINE-PROMPT-graph-close.md](./ENGINE-PROMPT-graph-close.md).

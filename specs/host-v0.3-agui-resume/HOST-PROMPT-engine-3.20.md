@@ -1,5 +1,10 @@
 # Host prompt H-320 · Adopt prismal-ai 3.20 and close the engine graph at shutdown
 
+Status: **DONE** (2026-11-02, branch `feat/h320-engine-shutdown`). Found while doing
+it: 3.20.0's `aclose_async_compiled_graph()` hangs unless something else holds the
+graph; the host holds it (`deps.ENGINE_GRAPHS`) and the engine fix is
+[ENGINE-PROMPT-graph-close.md](./ENGINE-PROMPT-graph-close.md).
+
 The engine side is already done: prismal commit `23a35c0` ("fix(graph): close async
 checkpointers so processes can exit"), released in **prismal-ai 3.20.0** on PyPI, adds
 `prismal.agents.graph.aclose_async_compiled_graph()`. This prompt is the host side.
