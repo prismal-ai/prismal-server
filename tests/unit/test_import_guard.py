@@ -75,7 +75,13 @@ HOST_EXCEPTIONS: dict[str, frozenset[str]] = {
     # RH2-4: A2A wire constants, so the host dispatches on the engine's own
     # method / header names instead of re-declaring protocol strings.
     "prismal.a2a.v1.constants": frozenset(
-        {"METHOD_SEND_STREAMING_MESSAGE", "LEGACY_METHOD_STREAM", "VERSION_HEADER"}
+        {
+            "METHOD_SEND_MESSAGE",
+            "METHOD_SEND_STREAMING_MESSAGE",
+            "LEGACY_METHOD_SEND",
+            "LEGACY_METHOD_STREAM",
+            "VERSION_HEADER",
+        }
     ),
     # Identity seam (CLAUDE.md, v0.1): auth backends produce engine identities.
     "prismal.identity": frozenset(

@@ -36,6 +36,7 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from prismal_server import __version__
 from prismal_server.config import HostSettings
+from prismal_server.errors import map_exception
 from prismal_server.usage.models import UsageWire
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,19 @@ def conversation_id(org_id: str | None, local_id: str | None) -> str | None:
     if local_id is None:
         return None
     return local_id if org_id is None else f"{org_id}/{local_id}"
+
+
+def route_template(request: Any) -> str:
+    """The matched route's path template (``/threads/{thread_id}/messages``)."""
+    path = getattr(request.scope.get("route"), "path", None)
+    return path if isinstance(path, str) else str(request.url.path)
+
+
+def fail_span(span: TurnSpan, exc: BaseException) -> None:
+    """End ``span`` for an exception: the host error code, or cancelled."""
+    if isinstance(exc, Exception):
+        span.fail(map_exception(exc).code)
+    span.end()
 
 
 class TurnSpan:

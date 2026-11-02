@@ -27,7 +27,7 @@ from starlette.background import BackgroundTask
 from prismal_server import openapi_examples as ex
 from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import Lease, release_after
-from prismal_server.errors import is_budget_exceeded, map_exception
+from prismal_server.errors import is_budget_exceeded
 from prismal_server.streaming import (
     STREAM_PROTOCOL_HEADER,
     ChunkPump,
@@ -37,7 +37,12 @@ from prismal_server.streaming import (
     native_events,
     sse_stream,
 )
-from prismal_server.tracing import TurnSpan, conversation_id
+from prismal_server.tracing import (
+    TurnSpan,
+    conversation_id,
+    fail_span,
+    route_template,
+)
 from prismal_server.usage.models import UsageRecord, UsageWire
 from prismal_server.usage.store import new_turn_id
 from prismal_server.usage.summary import TurnUsageProbe
@@ -110,19 +115,6 @@ def wants_agui(request: Request, protocol: Protocol | None) -> bool:
             if key.strip().lower() == "profile" and value.strip().strip('"') == "ag-ui":
                 return True
     return False
-
-
-def route_template(request: Request) -> str:
-    """The matched route's path template (``/threads/{thread_id}/messages``)."""
-    route = request.scope.get("route")
-    return getattr(route, "path", None) or request.url.path
-
-
-def fail_span(span: TurnSpan, exc: BaseException) -> None:
-    """End ``span`` for an exception: the host error code, or cancelled."""
-    if isinstance(exc, Exception):
-        span.fail(map_exception(exc).code)
-    span.end()
 
 
 def _engine_settings(runtime: Any) -> Any:

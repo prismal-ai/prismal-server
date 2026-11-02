@@ -33,8 +33,8 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from prismal_server import metrics
 from prismal_server.auth import ForbiddenTenant, resolve_org_id
 from prismal_server.errors import map_exception
-from prismal_server.routes.threads import Protocol, fail_span, open_turn
-from prismal_server.tracing import conversation_id
+from prismal_server.routes.threads import Protocol, open_turn
+from prismal_server.tracing import conversation_id, fail_span
 
 logger = logging.getLogger(__name__)
 
