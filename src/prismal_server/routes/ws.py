@@ -234,17 +234,16 @@ class _Session:
         )
         span.set_tenant(self._org_id, conversation_id(self._org_id, self._thread_id))
         try:
-            with span.activate():  # the graph pump task inherits the span context
-                turn = await open_turn(
-                    self._state,
-                    org_id=self._org_id,
-                    thread_id=self._thread_id,
-                    role=frame.role,
-                    content=frame.content,
-                    agui=agui,
-                    pump_maxsize=_PUMP_MAXSIZE,
-                    span=span,
-                )
+            turn = await open_turn(  # starts the pump task under the span
+                self._state,
+                org_id=self._org_id,
+                thread_id=self._thread_id,
+                role=frame.role,
+                content=frame.content,
+                agui=agui,
+                pump_maxsize=_PUMP_MAXSIZE,
+                span=span,
+            )
         except BaseException as exc:
             fail_span(span, exc)
             if not isinstance(exc, Exception):

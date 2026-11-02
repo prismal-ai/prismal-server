@@ -185,6 +185,8 @@ async def test_pre_stream_refusals_are_traced(
     s = _one(mem)
     assert s.status.status_code == StatusCode.ERROR
     assert _attrs(s)["error.type"] == code
+    assert s.status.description == code  # never "Type: message"
+    assert not s.events  # no exception event (message/stack can carry content)
 
 
 async def test_disconnect_marks_cancelled(mem: InMemorySpanExporter) -> None:
@@ -265,3 +267,61 @@ async def test_untraced_routes(mem: InMemorySpanExporter) -> None:
         for path in ("/healthz", "/readyz", "/v1/usage", "/v1/budget"):
             await c.get(path)
     assert _spans(mem) == []
+
+
+async def test_exception_message_never_exported(mem: InMemorySpanExporter) -> None:
+    async def factory(*, tool_provider: Any = None) -> Any:
+        raise RuntimeError("could not connect postgresql://u:CANARY-PW@db/x")
+
+    async with _client(_app(mem, graph_factory=factory)) as c:
+        resp = await c.post("/threads/t-x/messages", json={"content": "x"})
+    assert resp.status_code == 500
+    s = _one(mem)
+    assert s.status.status_code == StatusCode.ERROR
+    assert _attrs(s)["error.type"] == "internal_error"
+    assert not s.events
+    assert "CANARY-PW" not in repr((s.attributes, s.events, s.status))
+
+
+async def test_host_side_stream_error_is_error_not_cancelled(
+    mem: InMemorySpanExporter,
+) -> None:
+    tracing = Tracing(HostSettings(), exporter=mem)
+    span = tracing.turn(route=MESSAGES, transport="sse", protocol="native")
+
+    async def chunks() -> AsyncIterator[Any]:
+        yield FakeGraph._chunk(content="hi", tagged=False, meta={})
+
+    def boom(chunk: Any) -> Any:
+        raise KeyError("translate bug")
+
+    body = sse_stream(chunks(), thread_id="t", translate=boom, span=span)
+    with pytest.raises(KeyError):
+        async for _ in body:
+            pass
+    s = _one(mem)
+    assert s.status.status_code == StatusCode.ERROR
+    assert _attrs(s)["error.type"] == "internal_error"
+    assert "prismal.outcome" not in _attrs(s)
+
+
+async def test_runtime_build_does_not_inherit_turn_span(
+    mem: InMemorySpanExporter,
+) -> None:
+    from opentelemetry import trace
+
+    app = _app(mem)
+    registry = app.state.registry
+    real_acquire = registry.acquire
+    seen: list[bool] = []
+
+    async def acquire(org_id: Any) -> Any:
+        # Engine background tasks started while building a runtime (quota
+        # poller) copy this context; it must not hold the request's span.
+        seen.append(trace.get_current_span().get_span_context().is_valid)
+        return await real_acquire(org_id)
+
+    registry.acquire = acquire
+    async with _client(app) as c:
+        await c.post("/threads/t-r/messages", json={"content": "x"})
+    assert seen == [False]

@@ -222,6 +222,10 @@ async def native_events(
                 "usage": usage.model_dump() if usage else None,
             },
         )
+    except Exception as exc:  # a host-side failure is an error, not a cancel
+        if span is not None:
+            span.fail(map_exception(exc).code)
+        raise
     finally:
         if span is not None:
             span.end()
@@ -353,6 +357,10 @@ async def agui_events(
                 logger.warning("usage record failed (ag-ui)", exc_info=True)
         for event in finish_run(ctx, summary=summary, result=result):
             yield event
+    except Exception as exc:  # a host-side failure is an error, not a cancel
+        if span is not None:
+            span.fail(map_exception(exc).code)
+        raise
     finally:
         if span is not None:
             span.end()

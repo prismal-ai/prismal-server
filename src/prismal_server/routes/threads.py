@@ -12,6 +12,7 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -271,16 +272,20 @@ async def open_turn(
             and getattr(engine_settings, "agui_events_enabled", False)
         ):
             raise ProtocolNotEnabled()  # SPEC-RH2-AGU-003: before streaming
-        graph = await state.graph_factory(
-            tool_provider=getattr(lease.runtime, "tool_provider", None)
-        )
         config = {"configurable": {"thread_id": engine_thread, "org_id": org_id}}
         graph_input = {"messages": [{"role": role, "content": content}]}
         stream_mode: Any = _AGUI_STREAM_MODES if agui else "messages"
-        pump = ChunkPump(
-            graph.astream(graph_input, config, stream_mode=stream_mode),
-            maxsize=pump_maxsize,
-        )
+        # Only the per-turn graph and its pump task run under the turn span;
+        # the runtime lease (which may build a runtime and start long-lived
+        # engine tasks) must not inherit it.
+        with span.activate() if span is not None else contextlib.nullcontext():
+            graph = await state.graph_factory(
+                tool_provider=getattr(lease.runtime, "tool_provider", None)
+            )
+            pump = ChunkPump(
+                graph.astream(graph_input, config, stream_mode=stream_mode),
+                maxsize=pump_maxsize,
+            )
     except BaseException:
         await lease.release()
         raise
@@ -331,17 +336,16 @@ async def run_turn(
         org_id = resolve_org_id(request, identity)
         span.set_tenant(org_id, conversation_id(org_id, thread_id))
         text = content() if callable(content) else content
-        with span.activate():  # the graph pump task inherits the span context
-            turn = await open_turn(
-                state,
-                org_id=org_id,
-                thread_id=thread_id,
-                role=role,
-                content=text,
-                agui=agui,
-                run_id=run_id,
-                span=span,
-            )
+        turn = await open_turn(  # starts the pump task under the span
+            state,
+            org_id=org_id,
+            thread_id=thread_id,
+            role=role,
+            content=text,
+            agui=agui,
+            run_id=run_id,
+            span=span,
+        )
     except BaseException as exc:
         fail_span(span, exc)
         raise

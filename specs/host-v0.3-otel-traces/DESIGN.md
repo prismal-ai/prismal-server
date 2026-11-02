@@ -157,7 +157,7 @@ they are omitted, never written as zero.
 | Host error, before or during the stream (`budget_exceeded`, `forbidden_tenant`, `protocol_not_enabled`, `invalid_thread_id`, `invalid_input`, `internal_error`, …) | status `ERROR`, `error.type` = the host error code, status description = the code (never the message) |
 | A2A JSON-RPC error response | status `ERROR`, `error.type` = `jsonrpc.<code>` (e.g. `jsonrpc.-32001`) |
 | Client disconnect / WS close / cancel frame mid-turn | status `UNSET`, `prismal.outcome=cancelled` |
-| Unhandled exception | status `ERROR`, `error.type` = exception class name, no exception message or stack recorded (they can contain content) |
+| Unhandled exception | status `ERROR`, `error.type` = the mapped host code (`internal_error`, the code the client sees), no exception event, message or stack recorded (they can contain content) |
 
 **Duration.** The span starts when the route handler accepts the request, so refusals
 inside the handler (402, 403, 406, 422 from host checks) are traced. It ends when the
@@ -166,8 +166,9 @@ WebSocket there is one span per turn, from the `message` frame to the terminal f
 Requests that FastAPI rejects before the handler runs (body validation `422`) and auth
 `401`s are not traced.
 
-**Nesting.** The graph's chunk pump task, and the A2A handler call, are started while
-the root span is current, so the contextvars copied into the task carry it, and engine
+**Nesting.** Only the per-turn graph construction and its chunk pump task, and the A2A handler
+call, are started while the root span is current (never the runtime lease, whose
+runtime build may start long-lived engine tasks), so the contextvars copied into the task carry it, and engine
 spans become its children. An engine with its OTel off simply contributes no children.
 
 ### 5.4 Where it hooks in

@@ -81,7 +81,14 @@ class TurnSpan:
     @contextlib.contextmanager
     def activate(self) -> Iterator[None]:
         """Make the span current (tasks created inside inherit it); never ends it."""
-        with trace.use_span(self._span, end_on_exit=False):
+        # No exception event / "Type: message" status: messages and stacks
+        # can carry content or credentials (DESIGN §3, §5.3).
+        with trace.use_span(
+            self._span,
+            end_on_exit=False,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
             yield
 
     def set_tenant(self, org_id: str | None, conversation: str | None) -> None:
