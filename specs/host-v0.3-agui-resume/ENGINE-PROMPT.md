@@ -43,7 +43,11 @@ Scope:
 5. Security: client tool args and results are untrusted input. The L1 sanitizer
    and the ActionInterceptor audit apply to them like any tool result. Budgets
    count the model calls around them.
-6. Tests: a fake-model run that calls a client tool, interrupts, resumes with a
+6. Atomic resume: make resuming an interrupt a compare-and-consume in the
+   checkpointer, so a second Command(resume) for an already-consumed interrupt
+   id fails instead of re-running the node. The host's per-process guard does not
+   cover multiple replicas.
+7. Tests: a fake-model run that calls a client tool, interrupts, resumes with a
    result, and finishes. Also: collision, oversize schema, cancel.
 
 Acceptance (EARS):

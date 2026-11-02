@@ -114,6 +114,13 @@ class NoPendingInterrupt(Exception):
         super().__init__("the thread has no pending interrupt to resume")
 
 
+class ResumeInProgress(Exception):
+    """409 ``resume_in_progress``: another resume of this thread is running."""
+
+    def __init__(self) -> None:
+        super().__init__("a resume of this thread is already in progress")
+
+
 class InvalidResume(Exception):
     """422 ``invalid_resume``: ids are not exactly the pending interrupts."""
 
@@ -132,15 +139,28 @@ class ResumeEntry(BaseModel):
 
 
 async def _resume_input(
-    graph: Any, config: dict[str, Any], resume: list[ResumeEntry]
+    graph: Any,
+    config: dict[str, Any],
+    resume: list[ResumeEntry],
+    *,
+    claims: set[str],
+    lease: Lease,
 ) -> Command[Any]:
     """``Command(resume={id: payload})`` after checking the engine checkpoint.
 
     The pending set comes only from the engine (``aget_state``); a retried
-    resume finds its interrupts consumed and is ``409`` (DESIGN §3.3).
+    resume finds its interrupts consumed and is ``409`` (DESIGN §3.3). A
+    concurrent resume of the same engine thread is refused while the first
+    holds its claim, which is freed with the turn's runtime lease (in-process;
+    replicas need sticky routing per thread).
     """
     if any(entry.status == "cancelled" for entry in resume):
         raise UnsupportedResume()
+    key = config["configurable"]["thread_id"]
+    if key in claims:  # check-and-add with no await between: atomic per loop
+        raise ResumeInProgress()
+    claims.add(key)
+    lease.on_release(lambda: claims.discard(key))
     snapshot = await graph.aget_state(config)
     pending = {intr.id for intr in getattr(snapshot, "interrupts", ())}
     if not pending:
@@ -336,7 +356,13 @@ async def open_turn(
                 tool_provider=getattr(lease.runtime, "tool_provider", None)
             )
             if resume:  # AG-UI resume (RH3-02): the user content is not sent
-                graph_input = await _resume_input(graph, config, resume)
+                graph_input = await _resume_input(
+                    graph,
+                    config,
+                    resume,
+                    claims=state.resume_claims,
+                    lease=lease,
+                )
             pump = ChunkPump(
                 graph.astream(graph_input, config, stream_mode=stream_mode),
                 maxsize=pump_maxsize,

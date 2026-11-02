@@ -73,6 +73,6 @@ exceptions `UnsupportedResume`, `NoPendingInterrupt`, `InvalidResume`, mapped in
 
 | ID | Task | Status |
 |---|---|---|
-| RH3-02-01 | Fake-mode interrupts | `TODO` |
-| RH3-02-02 | Resume path | `TODO` |
-| RH3-02-03 | Fixture, OpenAPI, docs | `TODO` |
+| RH3-02-01 | Fake-mode interrupts | `DONE` |
+| RH3-02-02 | Resume path | `DONE` |
+| RH3-02-03 | Fixture, OpenAPI, docs | `DONE` |

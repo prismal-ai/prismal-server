@@ -82,6 +82,7 @@ The host reads the pending interrupts from the engine checkpoint with
 | Case | Response |
 |---|---|
 | Any entry has `status: "cancelled"` | `422 unsupported_resume` |
+| Another resume of the same thread is still running (this process) | `409 resume_in_progress` |
 | The thread has no pending interrupt | `409 no_pending_interrupt` |
 | The ids are not exactly the pending set (unknown, missing or duplicate) | `422 invalid_resume` |
 | AG-UI disabled | `406 protocol_not_enabled` (unchanged) |
@@ -96,10 +97,15 @@ and gets `409 no_pending_interrupt`. If the resumed run interrupts again, the ne
 interrupts have new ids, so the old entries are `invalid_resume`. This holds across
 replicas because it rests only on the checkpoint. The host keeps no per-`runId` state.
 
-**Known gap (my call):** two resumes of the same thread arriving *concurrently* can
-both pass validation. The engine checkpointer serialises the writes, but both runs
-stream. This is accepted and documented, not locked: a per-thread lock would only
-cover one process.
+**Concurrent resumes.** Two resumes of the same thread arriving together could both
+pass the checkpoint check, and an approved action would then run twice. The host holds
+an in-process claim per engine thread from validation until the turn's runtime lease is
+released (stream end, error, refusal or the response backstop). A second resume
+meanwhile gets `409 resume_in_progress`. This was raised by the security review; a
+`checkpoint_id` pin was rejected because LangGraph forks from the given checkpoint
+instead of refusing. **Remaining gap:** the claim is per process, so multi-replica
+deployments need sticky routing per thread (or the engine-side atomic resume asked
+for in ENGINE-PROMPT.md).
 
 ### 3.4 Output
 

@@ -45,6 +45,7 @@ _NAME_MAP: dict[str, tuple[int, str]] = {
     "UnsupportedResume": (422, "unsupported_resume"),  # routes/threads.py
     "NoPendingInterrupt": (409, "no_pending_interrupt"),  # routes/threads.py
     "InvalidResume": (422, "invalid_resume"),  # routes/threads.py
+    "ResumeInProgress": (409, "resume_in_progress"),  # routes/threads.py
     "InvalidAgUiInput": (422, "invalid_input"),  # routes/agui.py
     "AdminDisabled": (404, "admin_disabled"),  # routes/admin.py
     "AdminForbidden": (403, "forbidden"),  # routes/admin.py

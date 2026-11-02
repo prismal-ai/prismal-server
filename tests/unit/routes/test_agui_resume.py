@@ -212,3 +212,42 @@ async def test_plain_run_has_no_resume_attributes() -> None:
     assert _text(_events(resp)) == "echo: hi"
     (s,) = w.mem.get_finished_spans()
     assert "prismal.agui.resume" not in dict(s.attributes or {})
+
+
+async def test_concurrent_resume_is_409_in_progress() -> None:
+    import asyncio
+
+    from langgraph.types import Command
+
+    from prismal_server.fake import FakeCheckpoint, FakeGraph, FakeSummaries
+
+    gate = asyncio.Event()
+    summaries, checkpoint = FakeSummaries(), FakeCheckpoint()
+
+    class SlowResume(FakeGraph):
+        async def _run(self, graph_input: Any, config: Any, *, tagged: bool) -> Any:
+            if isinstance(graph_input, Command):
+                await gate.wait()
+            async for chunk in super()._run(graph_input, config, tagged=tagged):
+                yield chunk
+
+    async def factory(*, tool_provider: Any = None) -> Any:
+        return SlowResume(summaries, checkpoint)
+
+    settings = HostSettings(host_fake_llm_mode=True)
+    app = create_app(settings=settings, graph_factory=factory)
+    body = _input(resume=[_resolve()], run_id="r-2")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        await _interrupt(c)
+        first = asyncio.create_task(c.post("/v1/agui", json=body))
+        for _ in range(100):
+            if app.state.resume_claims:
+                break
+            await asyncio.sleep(0.01)
+        second = await c.post("/v1/agui", json=body)
+        gate.set()
+        done = await first
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "resume_in_progress"
+    assert done.status_code == 200
+    assert app.state.resume_claims == set()  # claim freed with the lease

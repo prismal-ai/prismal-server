@@ -1,0 +1,179 @@
+{
+  "description": "prismal-server AG-UI 1.0 interrupt \u2192 resume, fake-LLM mode (timestamps removed). Run 1 ends with RUN_FINISHED.outcome interrupt; run 2 resumes it via RunAgentInput.resume.",
+  "runs": [
+    {
+      "input": {
+        "threadId": "thread-1",
+        "runId": "run-1",
+        "messages": [
+          {
+            "id": "msg-1",
+            "role": "user",
+            "content": "/interrupt Approve the plan?"
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "state": {},
+        "forwardedProps": {}
+      },
+      "events": [
+        {
+          "type": "RUN_STARTED",
+          "threadId": "thread-1",
+          "runId": "run-1",
+          "protocolVersion": "1.0"
+        },
+        {
+          "type": "STATE_SNAPSHOT",
+          "snapshot": {}
+        },
+        {
+          "type": "CUSTOM",
+          "name": "prismal.usage",
+          "value": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 15,
+            "calls": 1,
+            "cost_usd": 0.0,
+            "cost_source": "none",
+            "estimated": true,
+            "served_model": "fake/echo",
+            "gateway": null
+          }
+        },
+        {
+          "type": "RUN_FINISHED",
+          "threadId": "thread-1",
+          "runId": "run-1",
+          "outcome": {
+            "type": "interrupt",
+            "interrupts": [
+              {
+                "id": "fake-int-1",
+                "reason": "input_required",
+                "message": "Approve the plan?",
+                "metadata": {
+                  "value": {
+                    "reason": "input_required",
+                    "message": "Approve the plan?"
+                  }
+                }
+              }
+            ]
+          },
+          "usage": [
+            {
+              "provider": "fake",
+              "model": "fake/echo",
+              "inputTokens": 10,
+              "outputTokens": 5,
+              "totalTokens": 15,
+              "reasoningTokens": 0,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "input": {
+        "threadId": "thread-1",
+        "runId": "run-2",
+        "messages": [],
+        "resume": [
+          {
+            "interruptId": "fake-int-1",
+            "status": "resolved",
+            "payload": {
+              "action": "approve"
+            }
+          }
+        ],
+        "tools": [],
+        "context": [],
+        "state": {},
+        "forwardedProps": {}
+      },
+      "events": [
+        {
+          "type": "RUN_STARTED",
+          "threadId": "thread-1",
+          "runId": "run-2",
+          "protocolVersion": "1.0"
+        },
+        {
+          "type": "STATE_SNAPSHOT",
+          "snapshot": {}
+        },
+        {
+          "type": "TEXT_MESSAGE_START",
+          "messageId": "fake-msg",
+          "role": "assistant"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "fake-msg",
+          "delta": "resumed: {\"fake-"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "fake-msg",
+          "delta": "int-1\": {\"action"
+        },
+        {
+          "type": "TEXT_MESSAGE_CONTENT",
+          "messageId": "fake-msg",
+          "delta": "\": \"approve\"}}"
+        },
+        {
+          "type": "TEXT_MESSAGE_END",
+          "messageId": "fake-msg"
+        },
+        {
+          "type": "CUSTOM",
+          "name": "prismal.usage",
+          "value": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 15,
+            "calls": 1,
+            "cost_usd": 0.0,
+            "cost_source": "none",
+            "estimated": true,
+            "served_model": "fake/echo",
+            "gateway": null
+          }
+        },
+        {
+          "type": "RUN_FINISHED",
+          "threadId": "thread-1",
+          "runId": "run-2",
+          "outcome": {
+            "type": "success"
+          },
+          "usage": [
+            {
+              "provider": "fake",
+              "model": "fake/echo",
+              "inputTokens": 10,
+              "outputTokens": 5,
+              "totalTokens": 15,
+              "reasoningTokens": 0,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

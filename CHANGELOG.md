@@ -18,6 +18,17 @@ All notable changes to `prismal-server`. The format follows
 - Explicit dependencies `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`
   (`>=1.43,<2`; both were already resolved transitively).
 
+- **AG-UI interrupt resume** (RH3-02, spec
+  [`specs/host-v0.3-agui-resume/`](./specs/host-v0.3-agui-resume/)). `POST /v1/agui`
+  accepts AG-UI 1.0 `RunAgentInput.resume` (`ResumeEntry[]`) and resumes the thread's
+  pending interrupts with `Command(resume={interruptId: payload})`.
+  - New refusals: `409 no_pending_interrupt` (this includes retries), `409 resume_in_progress`,
+    `422 invalid_resume`, `422 unsupported_resume` (`cancelled`).
+  - Fake mode gains a `/interrupt <message>` script.
+  - A replayable fixture is published at `fixtures/agui/interrupt-resume.json`.
+  - Frontend tools await the engine (`ENGINE-PROMPT.md`).
+- Explicit dependency `langgraph>=1.0,<2` (already resolved through the engine).
+
 ### Changed
 
 - `POST /v1/agui` validates the run input after authentication. In strict auth mode, an

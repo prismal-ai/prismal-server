@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -122,10 +122,18 @@ class Lease:
         self._registry = registry
         self._entry: _Entry | None = entry
         self.runtime: Any = entry.runtime
+        self._on_release: list[Callable[[], None]] = []
+
+    def on_release(self, hook: Callable[[], None]) -> None:
+        """Run ``hook`` once when the lease is released (turn-scoped claims)."""
+        self._on_release.append(hook)
 
     async def release(self) -> None:
         entry, self._entry = self._entry, None
         if entry is not None:
+            hooks, self._on_release = self._on_release, []
+            for hook in hooks:
+                hook()
             await self._registry._release(entry)
 
 

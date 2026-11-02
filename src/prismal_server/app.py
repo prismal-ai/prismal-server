@@ -144,6 +144,8 @@ def create_app(
     app.state.run_summary = run_summary
     app.state.a2a_engine_settings = a2a_engine_settings
     app.state.tracing = tracing
+    # Engine threads with an AG-UI resume in flight (RH3-02, DESIGN §3.3).
+    app.state.resume_claims = set()
 
     register_exception_handlers(app)
     openapi_examples.install(app)  # RH2-07-03: examples served verbatim
