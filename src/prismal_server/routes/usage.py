@@ -20,6 +20,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 
 from prismal_server import metrics
+from prismal_server import openapi_examples as ex
 from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.usage.aggregate import by_model, cache_hit_ratio, total
 from prismal_server.usage.models import (
@@ -88,7 +89,7 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
     return (at, turn_id)
 
 
-@router.get("/usage")
+@router.get("/usage", responses=ex.USAGE_RESPONSES)
 async def get_usage(
     request: Request,
     thread_id: str | None = None,
@@ -137,7 +138,7 @@ async def get_usage(
     return report.model_dump(mode="json")
 
 
-@router.get("/budget")
+@router.get("/budget", responses=ex.BUDGET_RESPONSES)
 async def get_budget(request: Request, thread_id: str | None = None) -> dict[str, Any]:
     """The org's budget status and gateway quota windows, as the engine reports them."""
     identity = await authenticate(request)

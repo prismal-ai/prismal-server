@@ -24,6 +24,7 @@ from prismal.events.agui import AgUiContext
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
+from prismal_server import openapi_examples as ex
 from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import Lease, release_after
 from prismal_server.errors import is_budget_exceeded
@@ -325,7 +326,7 @@ async def run_turn(
     )
 
 
-@router.post("/threads/{thread_id}/messages")
+@router.post("/threads/{thread_id}/messages", responses=ex.MESSAGES)
 async def post_message(
     thread_id: str,
     body: MessageIn,

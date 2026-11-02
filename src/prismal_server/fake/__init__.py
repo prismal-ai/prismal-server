@@ -10,7 +10,7 @@ The engine ships no fake chat model, so the script lives here — it only stands
 in for the graph and never touches engine logic. ``build_test_runtime`` takes no
 ``config_source``, so ``tenant.yaml`` is ignored in fake mode.
 
-Seam: composition — ``build_test_runtime`` (``prismal.composition.runtime``).
+Seam: composition — ``build_test_runtime`` (``prismal.composition``, HRS §3 row 1).
 """
 
 from __future__ import annotations

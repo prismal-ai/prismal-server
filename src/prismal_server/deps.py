@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from prismal.agents.graph import get_async_compiled_graph
-from prismal.composition.runtime import build_runtime
+from prismal.composition import build_runtime
 
 from prismal_server.config import HostSettings
 from prismal_server.tenancy.config_source import (

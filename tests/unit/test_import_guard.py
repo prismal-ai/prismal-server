@@ -1,38 +1,20 @@
 """Import-guard: the host imports the engine only through its sanctioned surface.
 
-RHB-05-01 (v0.1) established the four seams below; RH2-00-03 (v0.2) extends the
-allowlist with the engine-owned **public host read surface** (``SPEC-HRS-SUR-001``,
-``prismal/specs/composition-root/DELTA-2026-10-host-read-surface.md`` §3).
+SPEC-RH2-NFR-002 (RH2-07-01): the allowlist is **exactly** the engine's public host
+read surface (``SPEC-HRS-SUR-001``,
+``prismal/specs/composition-root/DELTA-2026-10-host-read-surface.md`` §3), plus a
+short, documented list of v0.1 host entry points that HRS §3 forbids silently
+removing (``HOST_EXCEPTIONS``). Everything else the host reads is a
+``RuntimeContext`` method (HRS §4) and needs no import.
+
+Every rule is **symbol-restricted and exact-module**: only ``from <module> import
+<name>`` with a listed name passes. A bare ``import prismal...`` (exposes the whole
+module), a sub-module of a listed module (``prismal.composition.runtime``), a
+parent package, or an unlisted name is a violation. The scan is static (AST, no
+runtime import), so it flags a violation even on a code path that never executes.
 
 SPEC-RHB-NFR-001 / the ``CLAUDE.md`` one-hard-rule: ``prismal-server`` orchestrates
-the engine and reimplements none of its logic. The only sanctioned coupling is the
-**four entry points**:
-
-| Seam | Engine module(s) |
-|---|---|
-| Composition | ``prismal.composition`` (``build_runtime`` / ``build_test_runtime``) |
-| Execution | ``prismal.agents.graph`` (``get_async_compiled_graph``) |
-| Inbound A2A | ``prismal.a2a`` (``A2AServerHandler`` / ``build_agent_card`` / …) |
-| Identity | ``prismal.identity`` (``IdentityPort`` / ``OidcIdentityProvider``) |
-
-v0.2 adds two **symbol-restricted** modules (HRS §3 rows 4–5): only the listed
-names may be imported from them, via ``from <module> import <name>`` (a bare
-``import <module>`` would expose everything and is rejected):
-
-* ``prismal.events.agui`` — ``AgUiContext``, ``start_run``, ``to_agui_events``,
-  ``finish_run``, ``error_run``, ``AGUI_PROTOCOL_VERSION``
-* ``prismal.monitoring`` — ``get_run_summary``
-
-HRS row 6 (``prismal.composition.host_surface`` view types) is already covered by
-the ``prismal.composition`` seam. ``prismal.identity`` is not an HRS row but stays
-allowed: HRS §3 forbids silently removing an existing host entry point.
-
-Any other ``prismal.*`` import (``prismal.rag``, ``prismal.security``,
-``prismal.mcp``, ``prismal.core.*``, …) is a boundary violation — the logic it
-would pull in belongs to the engine. This test AST-scans every module under
-``src/prismal_server`` and fails on the first stray import. It is intentionally
-static (no runtime import), so it flags a violation even on a code path that never
-executes.
+the engine and reimplements none of its logic.
 """
 
 from __future__ import annotations
@@ -40,18 +22,17 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-# Module prefixes the host is allowed to import from `prismal`. A module is
-# allowed iff it equals one of these or is a dotted sub-module of one.
-ALLOWED_SEAM_PREFIXES: tuple[str, ...] = (
-    "prismal.composition",  # build_runtime / build_test_runtime
-    "prismal.agents.graph",  # get_async_compiled_graph
-    "prismal.a2a",  # A2AServerHandler / build_agent_card / AuthContext / re-exports
-    "prismal.identity",  # IdentityPort / OidcIdentityProvider / AgentIdentity / DID
-)
-
-# Modules from which only specific names may be imported (exact module match;
-# sub-modules are NOT implied). SPEC-RH2-NFR-002 / HRS §3 rows 4–5.
-ALLOWED_SYMBOLS: dict[str, frozenset[str]] = {
+# HRS §3, row by row. Changing a row is a coordinated minor in engine + host.
+HRS_SURFACE: dict[str, frozenset[str]] = {
+    # 1 — composition
+    "prismal.composition": frozenset({"build_runtime", "build_test_runtime"}),
+    # 2 — execution
+    "prismal.agents.graph": frozenset({"get_async_compiled_graph"}),
+    # 3 — A2A card inputs (re-exports since 3.10.2)
+    "prismal.a2a": frozenset(
+        {"build_agent_card", "get_settings", "DEFAULT_CAPABILITY_MAP"}
+    ),
+    # 4 — AG-UI translator (PRT5)
     "prismal.events.agui": frozenset(
         {
             "AgUiContext",
@@ -62,8 +43,56 @@ ALLOWED_SYMBOLS: dict[str, frozenset[str]] = {
             "AGUI_PROTOCOL_VERSION",
         }
     ),
+    # 5 — run summary / usage wire (PRT5)
     "prismal.monitoring": frozenset({"get_run_summary"}),
+    # 6 — HRS §4 view types, for annotations / isinstance only (never the
+    # module-level report functions: those are reached via RuntimeContext).
+    "prismal.composition.host_surface": frozenset(
+        {
+            "A2ARouteSpec",
+            "AuditChainStatus",
+            "AuditEntryView",
+            "AuditPageView",
+            "BudgetAmounts",
+            "BudgetStatusView",
+            "DecisionIntegrationStats",
+            "DecisionsReportView",
+            "QuotaWindowView",
+            "ReportWindow",
+            "RoutingPolicyStats",
+            "RoutingReportView",
+        }
+    ),
 }
+
+# v0.1 / RH2-4 host entry points outside the HRS §3 rows. HRS §3 forbids silently
+# removing an existing entry point, so they stay — each one named and justified.
+# Follow-up (engine): promote them to HRS rows in a coordinated minor.
+HOST_EXCEPTIONS: dict[str, frozenset[str]] = {
+    # Inbound A2A seam (CLAUDE.md): the handler, its auth context, and the
+    # engine-declared route paths (SPEC-HRS-A2A-001 companion).
+    "prismal.a2a": frozenset({"A2AServerHandler", "AuthContext", "a2a_route_paths"}),
+    # RH2-4: A2A wire constants, so the host dispatches on the engine's own
+    # method / header names instead of re-declaring protocol strings.
+    "prismal.a2a.v1.constants": frozenset(
+        {"METHOD_SEND_STREAMING_MESSAGE", "LEGACY_METHOD_STREAM", "VERSION_HEADER"}
+    ),
+    # Identity seam (CLAUDE.md, v0.1): auth backends produce engine identities.
+    "prismal.identity": frozenset(
+        {"IdentityPort", "OidcIdentityProvider", "AgentIdentity", "DID"}
+    ),
+}
+
+
+def _merge(*tables: dict[str, frozenset[str]]) -> dict[str, frozenset[str]]:
+    merged: dict[str, frozenset[str]] = {}
+    for table in tables:
+        for module, names in table.items():
+            merged[module] = merged.get(module, frozenset()) | names
+    return merged
+
+
+ALLOWED: dict[str, frozenset[str]] = _merge(HRS_SURFACE, HOST_EXCEPTIONS)
 
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "prismal_server"
 
@@ -72,41 +101,25 @@ def _is_engine_module(module: str | None) -> bool:
     return module is not None and (module == "prismal" or module.startswith("prismal."))
 
 
-def _is_allowed(module: str) -> bool:
-    return any(
-        module == prefix or module.startswith(prefix + ".")
-        for prefix in ALLOWED_SEAM_PREFIXES
-    )
-
-
-def _symbol_violations(tree: ast.AST) -> list[str]:
-    """Imports of symbol-restricted modules that reach beyond their allowlist."""
+def _violations(tree: ast.AST) -> list[str]:
+    """Every engine import in ``tree`` that is not an allowlisted ``from`` import."""
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.extend(a.name for a in node.names if a.name in ALLOWED_SYMBOLS)
-        elif (
-            isinstance(node, ast.ImportFrom)
-            and node.level == 0
-            and node.module in ALLOWED_SYMBOLS
-        ):
-            allowed = ALLOWED_SYMBOLS[node.module]
-            found.extend(
-                f"{node.module}.{a.name}" for a in node.names if a.name not in allowed
-            )
-    return found
-
-
-def _engine_imports(tree: ast.AST) -> list[str]:
-    """Every ``prismal`` module referenced by an import in ``tree``."""
-    found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+            # Bare `import prismal.x` exposes the whole module: never allowed.
             found.extend(a.name for a in node.names if _is_engine_module(a.name))
         elif isinstance(node, ast.ImportFrom):
             # `from . import x` has module=None, level>0 (relative — never engine).
-            if node.level == 0 and _is_engine_module(node.module):
-                found.append(node.module)  # type: ignore[arg-type]
+            if node.level != 0 or not _is_engine_module(node.module):
+                continue
+            module = node.module or ""
+            allowed = ALLOWED.get(module)
+            if allowed is None:
+                found.append(module)
+                continue
+            found.extend(
+                f"{module}.{a.name}" for a in node.names if a.name not in allowed
+            )
     return found
 
 
@@ -115,17 +128,7 @@ def _source_files() -> list[Path]:
 
 
 def test_source_tree_exists() -> None:
-    files = _source_files()
-    assert files, f"no host source found under {_SRC_ROOT}"
-
-
-def _violations(tree: ast.AST) -> list[str]:
-    stray = [
-        m
-        for m in _engine_imports(tree)
-        if not _is_allowed(m) and m not in ALLOWED_SYMBOLS
-    ]
-    return stray + _symbol_violations(tree)
+    assert _source_files(), f"no host source found under {_SRC_ROOT}"
 
 
 def test_only_sanctioned_engine_surface_is_imported() -> None:
@@ -139,48 +142,68 @@ def test_only_sanctioned_engine_surface_is_imported() -> None:
 
 
 def test_guard_catches_a_violation() -> None:
-    """The scanner is not vacuous: it rejects a stray engine import."""
+    """The scanner is not vacuous: it rejects stray engine imports."""
     bad = ast.parse("from prismal.rag import Retriever\nimport prismal.security\n")
-    modules = _engine_imports(bad)
-    assert modules == ["prismal.rag", "prismal.security"]
-    assert not any(_is_allowed(m) for m in modules)
+    assert _violations(bad) == ["prismal.rag", "prismal.security"]
 
 
-def test_guard_accepts_each_seam() -> None:
-    """Each sanctioned seam import is recognised as allowed."""
-    good = ast.parse(
-        "from prismal.composition.runtime import build_runtime\n"
-        "from prismal.agents.graph import get_async_compiled_graph\n"
-        "from prismal.a2a import build_agent_card\n"
-        "from prismal.a2a.server import A2AServerHandler\n"
-        "from prismal.identity import OidcIdentityProvider\n"
+def test_guard_accepts_every_hrs_row() -> None:
+    """Each HRS §3 row (1–6), imported by name from its exact module, passes."""
+    source = "".join(
+        f"from {module} import {', '.join(sorted(names))}\n"
+        for module, names in HRS_SURFACE.items()
     )
-    modules = _engine_imports(good)
-    assert modules and all(_is_allowed(m) for m in modules)
+    assert _violations(ast.parse(source)) == []
 
 
-def test_guard_accepts_hrs_read_surface() -> None:
-    """HRS §3 rows 4–6 are recognised as allowed (RH2-00-03)."""
-    good = ast.parse(
-        "from prismal.events.agui import AgUiContext, start_run, to_agui_events\n"
-        "from prismal.events.agui import finish_run, error_run, AGUI_PROTOCOL_VERSION\n"
-        "from prismal.monitoring import get_run_summary\n"
-        "from prismal.composition.host_surface import BudgetStatusView\n"
+def test_guard_accepts_documented_host_exceptions() -> None:
+    source = "".join(
+        f"from {module} import {', '.join(sorted(names))}\n"
+        for module, names in HOST_EXCEPTIONS.items()
     )
-    assert _violations(good) == []
+    assert _violations(ast.parse(source)) == []
 
 
-def test_guard_rejects_symbols_outside_hrs_rows() -> None:
-    """Symbol-restricted modules reject other names, bare imports and sub-modules."""
+def test_guard_rejects_sub_modules_of_a_row() -> None:
+    """Rows are exact modules: `prismal.composition.runtime` is not row 1."""
     bad = ast.parse(
-        "from prismal.monitoring import ObservabilityPort\n"
-        "import prismal.events.agui\n"
+        "from prismal.composition.runtime import build_runtime\n"
+        "from prismal.a2a.server import A2AServerHandler\n"
         "from prismal.monitoring.run_summary import get_run_summary\n"
         "from prismal.events import agui\n"
     )
-    assert set(_violations(bad)) == {
-        "prismal.monitoring.ObservabilityPort",  # name outside the row
-        "prismal.events.agui",  # bare import exposes the whole module
-        "prismal.monitoring.run_summary",  # sub-module is not implied
+    assert _violations(bad) == [
+        "prismal.composition.runtime",
+        "prismal.a2a.server",
+        "prismal.monitoring.run_summary",
         "prismal.events",  # parent package is not a row
-    }
+    ]
+
+
+def test_guard_rejects_names_outside_a_row() -> None:
+    bad = ast.parse(
+        "from prismal.monitoring import ObservabilityPort\n"
+        "from prismal.composition import RuntimeContext\n"
+        "from prismal.composition.host_surface import audit_page\n"
+        "from prismal.a2a import A2AClient\n"
+    )
+    assert _violations(bad) == [
+        "prismal.monitoring.ObservabilityPort",
+        "prismal.composition.RuntimeContext",
+        "prismal.composition.host_surface.audit_page",  # report fn ≠ view type
+        "prismal.a2a.A2AClient",
+    ]
+
+
+def test_guard_rejects_bare_imports_of_a_row() -> None:
+    """A bare import exposes the whole module, so even a row module fails."""
+    bad = ast.parse("import prismal.events.agui\nimport prismal.composition\n")
+    assert _violations(bad) == ["prismal.events.agui", "prismal.composition"]
+
+
+def test_host_surface_rows_name_real_view_types() -> None:
+    """Row 6 lists only names the released engine exports as view types."""
+    from prismal.composition import host_surface
+
+    exported = set(getattr(host_surface, "__all__", ()))
+    assert HRS_SURFACE["prismal.composition.host_surface"] <= exported

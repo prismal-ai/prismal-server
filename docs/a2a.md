@@ -1,7 +1,7 @@
 # Inbound A2A
 
-The host exposes the standard **A2A v0.3.x** surface so generic A2A clients
-interoperate — no prismal-specific extension. It owns **transport + auth only**:
+The host exposes the standard A2A surface, **v0.3.x and v1.0 side by side**, so
+generic A2A clients interoperate with no prismal-specific extension. It owns **transport + auth only**:
 every JSON-RPC call is passed through unchanged to the engine's
 `A2AServerHandler`, which already L1-sanitizes (`InputSanitizer`) and audits every
 in/out task. The host never re-sanitizes or re-audits.
@@ -42,6 +42,34 @@ raw JSON-RPC reaches the handler verbatim.
 A `message/stream` request is delegated to `handler.stream_rpc(...)` and returned
 as `text/event-stream`, emitting the handler's `data:` lines (artifacts, status
 updates) until completion.
+
+## v1.0 dual stack (v0.2)
+
+The engine chooses the protocol stack per request from the `A2A-Version` header,
+or `?A2A-Version=` when the header is absent. A missing header means v0.3. The
+host forwards request headers verbatim, except `Authorization`,
+`Proxy-Authorization` and `Cookie`, together with the resolved `org_id`.
+
+| | v0.3 | v1.0 |
+|---|---|---|
+| Methods | `message/send`, `message/stream`, `tasks/get`, `tasks/cancel` | `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask` (PascalCase) |
+| Task state | `completed` | `TASK_STATE_COMPLETED` |
+
+```bash
+curl -X POST localhost:8000/a2a -H 'A2A-Version: 1.0' -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"ListTasks","params":{}}'
+```
+
+- **Versioned card:** `GET /.well-known/agent-card.json?protocolVersion=1.0|0.3`.
+  Asking for the other stack is `404` unless the engine's `a2a_accept_legacy` is on.
+- **Tenant routes:** `POST {base}/{tenant}` and
+  `GET {base}/{tenant}/.well-known/agent-card.json`, where `{base}` is the path of
+  the engine's `a2a_base_url`. The RPC route requires the auth-resolved org to equal
+  the path tenant, otherwise `403 forbidden_tenant` before the handler runs. The
+  card route is public. Recommended: set `a2a_base_url` to end in `/a2a`, so
+  tenants live at `/a2a/{tenant}`.
+- `POST /a2a` resolves the org fail-closed: the engine scopes `ListTasks`/`GetTask`
+  by the forwarded `org_id`, so a bare or mismatched `X-Org-Id` is `403`.
 
 ## Auth & strict mode
 

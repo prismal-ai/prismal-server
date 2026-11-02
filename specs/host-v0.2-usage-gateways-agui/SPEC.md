@@ -22,7 +22,7 @@ are normative for `prismal-sdk` (`SPEC-CS2-*`) — same names, same types, same 
 | ID | Requirement | Prio |
 |---|---|---|
 | SPEC-RH2-NFR-001 | The engine dependency MUST be pinned `prismal-ai>=3.17,<4`. | `MUST` |
-| SPEC-RH2-NFR-002 | The import guard MUST allow exactly the engine **public host read surface** of `SPEC-HRS-SUR-001` (`prismal/specs/composition-root/DELTA-2026-10-host-read-surface.md` §3: `prismal.composition` build functions, `get_async_compiled_graph`, `prismal.a2a` card inputs, `prismal.events.agui`, `prismal.monitoring.get_run_summary`, `prismal.composition.host_surface` view types). Any other `prismal` import fails CI; all other engine reads go through `RuntimeContext` methods (HRS §4). | `MUST` |
+| SPEC-RH2-NFR-002 | The import guard MUST allow exactly the engine **public host read surface** of `SPEC-HRS-SUR-001` (`prismal/specs/composition-root/DELTA-2026-10-host-read-surface.md` §3: `prismal.composition` build functions, `get_async_compiled_graph`, `prismal.a2a` card inputs, `prismal.events.agui`, `prismal.monitoring.get_run_summary`, `prismal.composition.host_surface` view types). Any other `prismal` import fails CI; all other engine reads go through `RuntimeContext` methods (HRS §4). The v0.1 entry points outside HRS §3 (`A2AServerHandler`, `AuthContext`, `a2a_route_paths`, `prismal.a2a.v1.constants` wire names, `prismal.identity`) are kept as **named host exceptions** — HRS §3 forbids silently removing an entry point — until the engine promotes them to rows. | `MUST` |
 | SPEC-RH2-NFR-003 | The host MUST NOT price, meter, classify budgets, select models or translate graph chunks; it only calls engine functions/objects and persists or sums their returned records. | `MUST` |
 
 **EARS:** WHEN a module under `src/` imports a `prismal` symbol outside the allowlist, THE SYSTEM SHALL
@@ -191,7 +191,9 @@ Disabled features return `200` with `"enabled":false` and empty `integrations`/`
 ## 11. Error codes added
 
 `tenant_config_invalid` (500, opaque message), `protocol_not_enabled` (406), `invalid_window` (400),
-`forbidden_tenant` (403), `admin_disabled` (404), `budget_exceeded` (402 before a turn starts when the
+`invalid_cursor` (400, `/v1/usage`), `invalid_thread_id` (422, THR-001), `invalid_input` (422, `/v1/agui`),
+`forbidden_tenant` (403), `forbidden` (403, admin scope missing / org outside the grant),
+`admin_disabled` (404), `budget_exceeded` (402 before a turn starts when the
 tenant's hard cap or a gateway quota window is exhausted; mid-stream it is a terminal `error` event with
 `code:"budget_exceeded"` and the partial `usage`). SDK maps each (`SPEC-CS2-ERR-001`).
 
@@ -239,3 +241,4 @@ raised mid-stream, THE SYSTEM SHALL emit a terminal `error` event with the same 
 | 1.0 | 2026-10-04 | Ernesto Crespo | Initial technical spec for host v0.2 |
 | 1.1 | 2026-10-12 | Ernesto Crespo | [verify] items closed by VERIFY-RH2-00.md (`ListTasks`, `A2A-Version`, AG-UI encoding) |
 | 1.2 | 2026-10-12 | Ernesto Crespo | TEN-005 trust model (operator-authored tenant config); exact key allowlist; `forbidden_tenant` on tenant-selection mismatch |
+| 1.3 | 2026-11-02 | Ernesto Crespo | §11 synced with the codes added during RH2-2…RH2-6 (`invalid_cursor`, `invalid_thread_id`, `invalid_input`, `forbidden`); NFR-002 guard = HRS §3 + documented host exceptions (RH2-07-01) |

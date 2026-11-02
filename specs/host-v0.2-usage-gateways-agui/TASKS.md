@@ -228,10 +228,38 @@ Phase 6 decisions (2026-11-02):
 
 | ID | Task | Est. | Dep | SPEC | Status |
 |---|---|---|---|---|---|
-| RH2-07-01 | Import guard: allowlist = HRS §3 public host read surface, nothing else | 0.2 d | all | NFR-002/003 | `TODO` |
-| RH2-07-02 | `contract` suite vs released engine in fake mode (native, AG-UI, A2A v1, usage) | 0.4 d | 06-02 | all | `TODO` |
-| RH2-07-03 | OpenAPI examples (no secrets) + docs: usage, AG-UI, WS, admin, tenant config | 0.6 d | all | — | `TODO` |
-| RH2-07-04 | CHANGELOG, tag `v0.2.0`, GHCR image | 0.3 d | 07-02 | — | `TODO` |
+| RH2-07-01 | Import guard: allowlist = HRS §3 public host read surface, nothing else | 0.2 d | all | NFR-002/003 | `DONE` |
+| RH2-07-02 | `contract` suite vs released engine in fake mode (native, AG-UI, A2A v1, usage) | 0.4 d | 06-02 | all | `DONE` |
+| RH2-07-03 | OpenAPI examples (no secrets) + docs: usage, AG-UI, WS, admin, tenant config | 0.6 d | all | — | `DONE` |
+| RH2-07-04 | CHANGELOG, tag `v0.2.0`, GHCR image | 0.3 d | 07-02 | — | `WIP` |
+
+Phase 7 decisions (2026-11-02):
+- RH2-07-01: the guard is now an **exact per-module symbol allowlist** (`from <module> import <name>`
+  only). The prefix rule is gone, so sub-modules (`prismal.composition.runtime`), parent packages,
+  bare imports and unlisted names all fail. `HRS_SURFACE` mirrors HRS §3 rows 1–6; row 6 covers
+  only the 12 view types, never the module-level report functions. The open item from RH2-4 is
+  closed by listing `HOST_EXCEPTIONS` by name: `A2AServerHandler`, `AuthContext`,
+  `a2a_route_paths`, `prismal.a2a.v1.constants` (`METHOD_SEND_STREAMING_MESSAGE`,
+  `LEGACY_METHOD_STREAM`, `VERSION_HEADER`) and `prismal.identity`. HRS §3 forbids silently
+  removing them, and promoting them to HRS rows is an engine follow-up (a coordinated minor).
+  The host now imports `build_runtime`/`build_test_runtime` from `prismal.composition`.
+- RH2-07-02: `tests/contract/test_v02_contract.py` runs fake mode against the released engine:
+  native (fixture key order), `/tool`, `/error`, AG-UI through both entry points (real engine
+  translator, `PRISMAL_AGUI_EVENTS_ENABLED=true`), and `/v1/usage` sums. Fake mode composes no A2A
+  handler, and FAK-001 is unchanged, so the A2A v1 contract wraps the released
+  `A2AServerHandler` around a scripted graph injected through the registry builder. It covers the
+  versioned card, then `SendMessage` → `TASK_STATE_COMPLETED`, then `ListTasks`.
+- RH2-07-03: OpenAPI examples live in `prismal_server.openapi_examples` (taken from SPEC §3/§4/§9).
+  FastAPI encodes the document with `exclude_none=True`, which strips `null` inside examples, so
+  each declared response is tagged and restored verbatim after generation. A test scans every
+  example for secret-shaped text and checks error codes and usage key order. Fixed during this
+  task: the admin `404` now has the §11 code `admin_disabled` (it was a bare 404), and SPEC §11
+  is synced with the codes added in RH2-2…6.
+- RH2-07-04: `CHANGELOG.md` (with the upgrade notes for the thread key and `402`), version
+  `0.2.0`. **Left for the user:** push tag `v0.2.0` (merged `develop` → `main` first).
+  `release.yml` then builds the GHCR image and drafts the GitHub release, as for `v0.1.0`.
+- Metrics export (in-process counters) stays a follow-up; no task covers it in 0.2.
+
 
 ## Test inventory & traceability
 
@@ -247,6 +275,7 @@ Phase 6 decisions (2026-11-02):
 | WSK-001..003 | 05-01..04 | `tests/unit/routes/test_ws.py` |
 | FAK-001..003 | 06-01, 06-02, 06-05 | `tests/unit/fake/test_fake_runtime.py` |
 | ADM-001..005 | 06-03..07 | `tests/unit/routes/test_admin.py`, `tests/unit/routes/test_admin_reports.py` |
+| OpenAPI examples | 07-03 | `tests/unit/test_openapi_examples.py` |
 | all (live engine) | 07-02 | `tests/contract/test_v02_contract.py` (`contract` marker) |
 
 ## Risk register
@@ -286,3 +315,4 @@ RH2-7 1.5 d → **~15.5 person-days**.
 | 1.5 | 2026-10-12 | Ernesto Crespo | Phase 4 `DONE` (A2A v1.0 dual stack) |
 | 1.6 | 2026-10-12 | Ernesto Crespo | Phase 5 `DONE` (WebSocket) |
 | 1.7 | 2026-11-02 | Ernesto Crespo | Phase 6 `DONE` (fake-LLM mode & admin) |
+| 1.8 | 2026-11-02 | Ernesto Crespo | Phase 7: RH2-07-01..03 `DONE`; 07-04 awaiting tag push |
