@@ -21,8 +21,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 from prismal.events.agui import AgUiContext
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
 from prismal_server import openapi_examples as ex
@@ -97,6 +98,57 @@ async def create_thread() -> dict[str, str]:
 
 Protocol = Literal["prismal", "ag-ui"]
 _AGUI_STREAM_MODES = ["messages", "updates", "custom"]
+
+
+class UnsupportedResume(Exception):
+    """422 ``unsupported_resume``: a ``cancelled`` entry (engine semantics pending)."""
+
+    def __init__(self) -> None:
+        super().__init__("cancelled resume entries are not supported yet")
+
+
+class NoPendingInterrupt(Exception):
+    """409 ``no_pending_interrupt``: the thread has nothing to resume."""
+
+    def __init__(self) -> None:
+        super().__init__("the thread has no pending interrupt to resume")
+
+
+class InvalidResume(Exception):
+    """422 ``invalid_resume``: ids are not exactly the pending interrupts."""
+
+    def __init__(self) -> None:
+        super().__init__("resume must answer exactly the pending interrupts")
+
+
+class ResumeEntry(BaseModel):
+    """An AG-UI 1.0 ``ResumeEntry`` (the payload is graph input, never read)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    interrupt_id: str = Field(alias="interruptId", min_length=1)
+    status: Literal["resolved", "cancelled"]
+    payload: Any = None
+
+
+async def _resume_input(
+    graph: Any, config: dict[str, Any], resume: list[ResumeEntry]
+) -> Command[Any]:
+    """``Command(resume={id: payload})`` after checking the engine checkpoint.
+
+    The pending set comes only from the engine (``aget_state``); a retried
+    resume finds its interrupts consumed and is ``409`` (DESIGN §3.3).
+    """
+    if any(entry.status == "cancelled" for entry in resume):
+        raise UnsupportedResume()
+    snapshot = await graph.aget_state(config)
+    pending = {intr.id for intr in getattr(snapshot, "interrupts", ())}
+    if not pending:
+        raise NoPendingInterrupt()
+    ids = [entry.interrupt_id for entry in resume]
+    if len(ids) != len(set(ids)) or set(ids) != pending:
+        raise InvalidResume()
+    return Command(resume={entry.interrupt_id: entry.payload for entry in resume})
 
 
 class ProtocolNotEnabled(Exception):
@@ -235,6 +287,7 @@ async def open_turn(
     run_id: str | None = None,
     pump_maxsize: int = 0,
     span: TurnSpan | None = None,
+    resume: list[ResumeEntry] | None = None,
 ) -> Turn:
     """Start one chat turn for an already-resolved tenant (``state`` = app.state).
 
@@ -273,7 +326,7 @@ async def open_turn(
         ):
             raise ProtocolNotEnabled()  # SPEC-RH2-AGU-003: before streaming
         config = {"configurable": {"thread_id": engine_thread, "org_id": org_id}}
-        graph_input = {"messages": [{"role": role, "content": content}]}
+        graph_input: Any = {"messages": [{"role": role, "content": content}]}
         stream_mode: Any = _AGUI_STREAM_MODES if agui else "messages"
         # Only the per-turn graph and its pump task run under the turn span;
         # the runtime lease (which may build a runtime and start long-lived
@@ -282,6 +335,8 @@ async def open_turn(
             graph = await state.graph_factory(
                 tool_provider=getattr(lease.runtime, "tool_provider", None)
             )
+            if resume:  # AG-UI resume (RH3-02): the user content is not sent
+                graph_input = await _resume_input(graph, config, resume)
             pump = ChunkPump(
                 graph.astream(graph_input, config, stream_mode=stream_mode),
                 maxsize=pump_maxsize,
@@ -311,6 +366,7 @@ async def run_turn(
     content: str | Callable[[], str],
     agui: bool,
     run_id: str | None = None,
+    resume: list[ResumeEntry] | None = None,
 ) -> StreamingResponse:
     """Run one chat turn over HTTP and stream it natively or as AG-UI.
 
@@ -335,7 +391,9 @@ async def run_turn(
     try:
         org_id = resolve_org_id(request, identity)
         span.set_tenant(org_id, conversation_id(org_id, thread_id))
-        text = content() if callable(content) else content
+        if resume:
+            span.set_resume(len(resume))
+        text = "" if resume else content() if callable(content) else content
         turn = await open_turn(  # starts the pump task under the span
             state,
             org_id=org_id,
@@ -345,6 +403,7 @@ async def run_turn(
             agui=agui,
             run_id=run_id,
             span=span,
+            resume=resume,
         )
     except BaseException as exc:
         fail_span(span, exc)

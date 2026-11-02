@@ -97,6 +97,12 @@ class TurnSpan:
         if conversation is not None:
             self._span.set_attribute("gen_ai.conversation.id", conversation)
 
+    def set_resume(self, count: int) -> None:
+        """Mark an AG-UI resume run (RH3-02) and how many interrupts it answers."""
+        self._span.set_attributes(
+            {"prismal.agui.resume": True, "prismal.agui.resume_count": count}
+        )
+
     def record_usage(self, usage: UsageWire | None) -> None:
         if usage is None or self._ended:
             return
