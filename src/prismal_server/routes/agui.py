@@ -64,7 +64,6 @@ def last_user_text(messages: list[dict[str, Any]]) -> str:
 @router.post("/agui", responses=ex.AGUI)
 async def run_agent(body: RunAgentInput, request: Request) -> StreamingResponse:
     """Run one turn from an AG-UI ``RunAgentInput`` and stream AG-UI events."""
-    content = last_user_text(body.messages)
     if body.tools:
         logger.info(
             "ignoring %d client-declared AG-UI tools: %s",
@@ -75,7 +74,8 @@ async def run_agent(body: RunAgentInput, request: Request) -> StreamingResponse:
         request,
         thread_id=body.thread_id,
         role="user",
-        content=content,
+        # Validated inside the turn's span, so `invalid_input` is traced.
+        content=lambda: last_user_text(body.messages),
         agui=True,
         run_id=body.run_id,
     )

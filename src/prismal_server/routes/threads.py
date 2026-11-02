@@ -13,7 +13,7 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -27,7 +27,7 @@ from starlette.background import BackgroundTask
 from prismal_server import openapi_examples as ex
 from prismal_server.auth import authenticate, resolve_org_id
 from prismal_server.deps import Lease, release_after
-from prismal_server.errors import is_budget_exceeded
+from prismal_server.errors import is_budget_exceeded, map_exception
 from prismal_server.streaming import (
     STREAM_PROTOCOL_HEADER,
     ChunkPump,
@@ -37,6 +37,7 @@ from prismal_server.streaming import (
     native_events,
     sse_stream,
 )
+from prismal_server.tracing import TurnSpan, conversation_id
 from prismal_server.usage.models import UsageRecord, UsageWire
 from prismal_server.usage.store import new_turn_id
 from prismal_server.usage.summary import TurnUsageProbe
@@ -111,6 +112,19 @@ def wants_agui(request: Request, protocol: Protocol | None) -> bool:
     return False
 
 
+def route_template(request: Request) -> str:
+    """The matched route's path template (``/threads/{thread_id}/messages``)."""
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or request.url.path
+
+
+def fail_span(span: TurnSpan, exc: BaseException) -> None:
+    """End ``span`` for an exception: the host error code, or cancelled."""
+    if isinstance(exc, Exception):
+        span.fail(map_exception(exc).code)
+    span.end()
+
+
 def _engine_settings(runtime: Any) -> Any:
     """The tenant runtime's effective engine settings (process settings if unset)."""
     settings = getattr(runtime, "settings", None)
@@ -141,7 +155,9 @@ class Turn:
         agui: bool,
         run_id: str | None,
         heartbeat_s: float,
+        span: TurnSpan | None = None,
     ) -> None:
+        self.span = span
         self.lease = lease
         self.pump = pump
         self.thread_id = thread_id
@@ -160,6 +176,7 @@ class Turn:
                 heartbeat_s=self._heartbeat_s,
                 usage_for=self._probe.usage,
                 on_done=self._record_usage,
+                span=self.span,
             )
         return agui_events(
             self.pump,
@@ -167,6 +184,7 @@ class Turn:
             heartbeat_s=self._heartbeat_s,
             summary_for=self._probe.summary,
             on_done=self._record_usage,
+            span=self.span,
         )
 
     def sse_body(self) -> AsyncIterator[str]:
@@ -177,6 +195,7 @@ class Turn:
                 heartbeat_s=self._heartbeat_s,
                 usage_for=self._probe.usage,
                 on_done=self._record_usage,
+                span=self.span,
             )
         return agui_stream(
             self.pump,
@@ -184,6 +203,7 @@ class Turn:
             heartbeat_s=self._heartbeat_s,
             summary_for=self._probe.summary,
             on_done=self._record_usage,
+            span=self.span,
         )
 
     def _agui_context(self) -> AgUiContext:
@@ -199,7 +219,15 @@ class Turn:
         )
 
     async def aclose(self) -> None:
+        if self.span is not None:
+            self.span.end()  # no-op when the stream already ended it
         await self.pump.aclose()
+        await self.lease.release()
+
+    async def release(self) -> None:
+        """Response backstop: end the span and free the lease (idempotent)."""
+        if self.span is not None:
+            self.span.end()
         await self.lease.release()
 
 
@@ -213,6 +241,7 @@ async def open_turn(
     agui: bool,
     run_id: str | None = None,
     pump_maxsize: int = 0,
+    span: TurnSpan | None = None,
 ) -> Turn:
     """Start one chat turn for an already-resolved tenant (``state`` = app.state).
 
@@ -273,6 +302,7 @@ async def open_turn(
         agui=agui,
         run_id=run_id,
         heartbeat_s=settings.sse_heartbeat_s,
+        span=span,
     )
 
 
@@ -281,7 +311,7 @@ async def run_turn(
     *,
     thread_id: str,
     role: str,
-    content: str,
+    content: str | Callable[[], str],
     agui: bool,
     run_id: str | None = None,
 ) -> StreamingResponse:
@@ -289,22 +319,40 @@ async def run_turn(
 
     Shared by ``POST /threads/{id}/messages`` and ``POST /v1/agui``: auth and
     tenant resolution, then :func:`open_turn`; a budget refusal before the
-    first token is HTTP 402.
+    first token is HTTP 402. ``content`` may be a callable so input validation
+    runs inside the turn's span (``POST /v1/agui``'s ``invalid_input``).
+
+    One root span per turn (RH3-01): opened after authentication (a ``401`` is
+    not a run), failed with the host error code on any refusal, and ended by
+    the stream when its terminal event is sent.
     """
     # Resolve identity (401 in strict mode) then the tenant (TEN-001, AUT-005).
     identity = await authenticate(request)
-    org_id = resolve_org_id(request, identity)
-    settings = request.app.state.settings
-
-    turn = await open_turn(
-        request.app.state,
-        org_id=org_id,
-        thread_id=thread_id,
-        role=role,
-        content=content,
-        agui=agui,
-        run_id=run_id,
+    state = request.app.state
+    settings = state.settings
+    span = state.tracing.turn(
+        route=route_template(request),
+        transport="sse",
+        protocol="ag-ui" if agui else "native",
     )
+    try:
+        org_id = resolve_org_id(request, identity)
+        span.set_tenant(org_id, conversation_id(org_id, thread_id))
+        text = content() if callable(content) else content
+        with span.activate():  # the graph pump task inherits the span context
+            turn = await open_turn(
+                state,
+                org_id=org_id,
+                thread_id=thread_id,
+                role=role,
+                content=text,
+                agui=agui,
+                run_id=run_id,
+                span=span,
+            )
+    except BaseException as exc:
+        fail_span(span, exc)
+        raise
     try:
         # Peek the first item: a budget refusal before the first token is an
         # HTTP 402, not a stream (SPEC-RH2 §11). Bounded by the heartbeat so a
@@ -312,7 +360,8 @@ async def run_turn(
         first = await turn.pump.prime(wait_s=settings.sse_heartbeat_s)
         if first is not None and first[0] == "error" and is_budget_exceeded(first[1]):
             raise first[1]
-    except BaseException:
+    except BaseException as exc:
+        fail_span(span, exc)
         await turn.aclose()
         raise
 
@@ -322,7 +371,7 @@ async def run_turn(
         media_type="text/event-stream",
         headers=headers,
         # Idempotent backstop if the body is never iterated.
-        background=BackgroundTask(turn.lease.release),
+        background=BackgroundTask(turn.release),
     )
 
 

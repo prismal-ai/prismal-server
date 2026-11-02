@@ -29,7 +29,7 @@ from collections.abc import (
     Callable,
     Iterable,
 )
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prismal.events.agui import (
     AgUiContext,
@@ -42,6 +42,9 @@ from prismal.events.agui import (
 from prismal_server import metrics
 from prismal_server.errors import map_exception
 from prismal_server.usage.models import UsageWire
+
+if TYPE_CHECKING:
+    from prismal_server.tracing import TurnSpan
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +161,7 @@ async def native_events(
     translate: Callable[[Any], Iterable[SSEEvent]] = default_translate,
     usage_for: UsageProvider | None = None,
     on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
 ) -> AsyncGenerator[SSEEvent | None]:
     """A turn's native events, transport-free; ``None`` marks an idle heartbeat.
 
@@ -187,6 +191,10 @@ async def native_events(
                 if mapped.code == "budget_exceeded":
                     partial = _safe_usage(usage_for)
                     error["usage"] = partial.model_dump() if partial else None
+                    if span is not None:
+                        span.record_usage(partial)
+                if span is not None:
+                    span.fail(mapped.code)
                 yield ("error", error)
                 return
             else:  # "end"
@@ -196,6 +204,9 @@ async def native_events(
         usage = _safe_usage(usage_for)
         if usage is None:
             metrics.increment("usage_missing_total")
+        if span is not None:
+            span.record_usage(usage)
+            span.complete(finish_reason)
         if on_done is not None:
             try:
                 await on_done(finish_reason, usage)
@@ -212,6 +223,8 @@ async def native_events(
             },
         )
     finally:
+        if span is not None:
+            span.end()
         await pump.aclose()
 
 
@@ -223,6 +236,7 @@ async def sse_stream(
     translate: Callable[[Any], Iterable[SSEEvent]] = default_translate,
     usage_for: UsageProvider | None = None,
     on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
 ) -> AsyncIterator[str]:
     """Bridge a graph ``astream`` iterator (or a primed pump) to SSE frames.
 
@@ -236,6 +250,7 @@ async def sse_stream(
         translate=translate,
         usage_for=usage_for,
         on_done=on_done,
+        span=span,
     )
     async with contextlib.aclosing(events):
         async for event in events:
@@ -281,6 +296,7 @@ async def agui_events(
     result: Any = None,
     summary_for: SummaryProvider,
     on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
 ) -> AsyncGenerator[Any]:
     """A turn's engine AG-UI events, transport-free; ``None`` marks a heartbeat.
 
@@ -311,6 +327,10 @@ async def agui_events(
             elif kind == "error":
                 mapped = map_exception(value)
                 summary = _safe_summary(summary_for)
+                if span is not None:
+                    if mapped.code == "budget_exceeded":
+                        span.record_usage(_usage_of(summary))
+                    span.fail(mapped.code)
                 for event in error_run(
                     ctx, code=mapped.code, message=mapped.message, summary=summary
                 ):
@@ -323,6 +343,9 @@ async def agui_events(
         usage = _usage_of(summary)
         if usage is None:
             metrics.increment("usage_missing_total")
+        if span is not None:
+            span.record_usage(usage)
+            span.complete("stop")
         if on_done is not None:
             try:
                 await on_done("stop", usage)
@@ -331,6 +354,8 @@ async def agui_events(
         for event in finish_run(ctx, summary=summary, result=result):
             yield event
     finally:
+        if span is not None:
+            span.end()
         await pump.aclose()
 
 
@@ -344,6 +369,7 @@ async def agui_stream(
     result: Any = None,
     summary_for: SummaryProvider,
     on_done: DoneHook | None = None,
+    span: TurnSpan | None = None,
 ) -> AsyncIterator[str]:
     """:func:`agui_events` as data-only SSE frames plus heartbeat comments."""
     events = agui_events(
@@ -355,6 +381,7 @@ async def agui_stream(
         result=result,
         summary_for=summary_for,
         on_done=on_done,
+        span=span,
     )
     async with contextlib.aclosing(events):
         async for event in events:
