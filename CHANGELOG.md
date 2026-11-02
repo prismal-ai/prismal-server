@@ -34,6 +34,14 @@ All notable changes to `prismal-server`. The format follows
   - Frontend tools await the engine (`ENGINE-PROMPT.md`).
 - Explicit dependency `langgraph>=1.0,<2` (already resolved through the engine).
 
+### Fixed
+
+- The opt-in contract suite no longer hangs at interpreter exit. The engine's cached
+  compiled graph keeps a non-daemon `aiosqlite` checkpointer thread open, and the
+  suite now stops it at session end. The engine-side fix is requested in
+  `specs/host-v0.3-agui-resume/ENGINE-PROMPT.md`: a production process can still
+  wait on that thread at shutdown.
+
 ### Changed
 
 - `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
