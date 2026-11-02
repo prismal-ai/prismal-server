@@ -143,8 +143,10 @@ Resume runs are **not cancelled on disconnect**:
 - The runtime lease, and with it the resume claim, is held until the graph task is
   done (`Lease.hold_until`). A retry gets `409 resume_in_progress` meanwhile and
   `409 no_pending_interrupt` afterwards.
-- The turn's span ends as `cancelled`, as for any disconnect. The usage record is not
-  written, because the host never sees `done`.
+- The turn's span ends as `cancelled`, as for any disconnect. The usage record is still
+  written: once the graph finishes, a finalizer records the run's usage, at most once
+  per turn. Otherwise a deliberate disconnect would hide resumed runs from `/v1/usage`
+  (security review).
 - Plain turns keep the v0.2 behaviour (cancel within the disconnect).
 
 This overrides, for resume runs only, the original I1-B criterion "cancel within 1 s

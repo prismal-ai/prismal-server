@@ -117,6 +117,7 @@ class ChunkPump:
         # close the graph runs to completion and its output is discarded.
         self._detach_on_close = detach_on_close
         self._drain: asyncio.Task[None] | None = None
+        self.completed = False  # the graph stream reached its normal end
         self._task = asyncio.create_task(self._produce(chunks))
 
     @property
@@ -133,6 +134,7 @@ class ChunkPump:
         except Exception as exc:  # mid-stream engine failure (SPEC-RHB-CHT-006)
             await self._queue.put(("error", exc))
         else:
+            self.completed = True
             await self._queue.put(("end", None))
 
     async def prime(self, wait_s: float) -> PumpItem | None:

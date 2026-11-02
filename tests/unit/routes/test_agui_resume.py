@@ -359,7 +359,9 @@ async def test_disconnect_does_not_cancel_resume() -> None:
         return SlowResume(summaries, checkpoint)
 
     app = create_app(
-        settings=HostSettings(host_fake_llm_mode=True), graph_factory=factory
+        settings=HostSettings(host_fake_llm_mode=True),
+        graph_factory=factory,
+        run_summary=summaries,
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         await _interrupt(c)
@@ -373,6 +375,8 @@ async def test_disconnect_does_not_cancel_resume() -> None:
     await _settle()
     assert app.state.resume_claims == set()
     assert checkpoint.pending == {}  # the interrupt was consumed by the run
+    # The detached run is still accounted for (security review).
+    assert len(await _usage_rows(app)) == 2  # the interrupt run + the resume
 
 
 async def test_non_resume_turn_still_cancelled_on_close() -> None:
@@ -384,3 +388,25 @@ async def test_non_resume_turn_still_cancelled_on_close() -> None:
     )
     await turn.aclose()
     assert turn.pump.task.done()
+
+
+async def _usage_rows(app: Any) -> list[Any]:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    return await app.state.usage_store.query(
+        org_id=None,
+        thread_id="t-1",
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+    )
+
+
+async def test_streamed_resume_records_usage_once() -> None:
+    w = World()
+    async with w.client() as c:
+        await _interrupt(c)
+        resp = await c.post("/v1/agui", json=_input(resume=[_resolve()], run_id="r-2"))
+    assert resp.status_code == 200
+    await _settle()
+    assert len(await _usage_rows(w.app)) == 2  # one per turn, never doubled

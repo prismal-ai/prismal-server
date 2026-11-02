@@ -12,7 +12,9 @@ Seam: execution — ``get_async_compiled_graph`` (injected via ``app.state``).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
@@ -51,6 +53,7 @@ from prismal_server.usage.store import new_turn_id
 from prismal_server.usage.summary import TurnUsageProbe
 
 router = APIRouter(tags=["threads"])
+logger = logging.getLogger(__name__)
 
 
 # Shape of an org-scoped engine key prefix (`<len>:`). A single-tenant raw id
@@ -183,6 +186,23 @@ async def _resume_input(
             for (engine_id, _, _), e in zip(parsed, resume, strict=True)
         }
     )
+
+
+async def _finish_detached(
+    pump: ChunkPump, probe: TurnUsageProbe, record_usage: DoneHook
+) -> None:
+    """Wait for a resume's graph; record its usage if no stream did.
+
+    A client that disconnects mid-resume never sees ``done``, but the graph
+    still ran: its usage is recorded here (guarded to one record per turn).
+    """
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.shield(pump.task)
+    if pump.completed:
+        try:
+            await record_usage("stop", probe.usage())
+        except Exception:  # persistence must not break cleanup
+            logger.warning("usage record failed (detached resume)", exc_info=True)
 
 
 def _checkpoint_id(snapshot: Any) -> str | None:
@@ -346,10 +366,15 @@ async def open_turn(
     engine_thread = engine_thread_id(org_id, thread_id)
     probe = TurnUsageProbe(engine_thread, state.run_summary)
 
+    recorded = False
+
     async def record_usage(finish_reason: str, usage: UsageWire | None) -> None:
         # SPEC-RH2-USE-001: one record per finished turn with non-null usage.
-        if usage is None:
+        # Also reached by a detached resume's finalizer: never twice per turn.
+        nonlocal recorded
+        if usage is None or recorded:
             return
+        recorded = True
         await store.append(
             UsageRecord(
                 org_id=org_id,
@@ -396,7 +421,9 @@ async def open_turn(
                 detach_on_close=bool(resume),
             )
             if resume:  # the lease (and resume claim) outlives the response
-                lease.hold_until(pump.task)
+                lease.hold_until(
+                    asyncio.create_task(_finish_detached(pump, probe, record_usage))
+                )
 
         async def fence() -> str | None:
             return _checkpoint_id(await graph.aget_state(config))
