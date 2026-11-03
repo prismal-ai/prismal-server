@@ -6,6 +6,13 @@ All notable changes to `prismal-server`. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-02
+
+Host v0.3: per-request traces, AG-UI interrupt resume and engine 3.22.1. Specs:
+[`specs/host-v0.3-otel-traces/`](./specs/host-v0.3-otel-traces/),
+[`specs/host-v0.3-agui-resume/`](./specs/host-v0.3-agui-resume/).
+Engine pin: `prismal-ai>=3.22.1,<4` (verified on 3.22.1).
+
 ### Added
 
 - **Per-request OpenTelemetry traces** (RH3-01, spec
@@ -156,5 +163,7 @@ Reference host bootstrap: streaming chat over SSE, inbound A2A v0.3, the auth
 image, the contract suite and the import guard. Spec:
 [`specs/reference-host-bootstrap/`](./specs/reference-host-bootstrap/).
 
+[Unreleased]: https://github.com/prismal-ai/prismal-server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/prismal-ai/prismal-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/prismal-ai/prismal-server/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/prismal-ai/prismal-server/releases/tag/v0.1.0
