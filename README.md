@@ -111,7 +111,7 @@ round-trips a full chat turn over SSE.
 
 ## Related repos
 
-- [`prismal-ai/prismal`](https://github.com/prismal-ai/prismal) — the engine (pip dependency `prismal-ai`, pinned `>=3.20,<4`).
+- [`prismal-ai/prismal`](https://github.com/prismal-ai/prismal) — the engine (pip dependency `prismal-ai`, pinned `>=3.22.1,<4`).
 - [`prismal-ai/prismal-sdk`](https://github.com/prismal-ai/prismal-sdk) — thin client generated against this host's wire contract (`/openapi.json` + the A2A surface).
 
 ## License
