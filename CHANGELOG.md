@@ -33,6 +33,11 @@ All notable changes to `prismal-server`. The format follows
   - A replayable fixture is published at `fixtures/agui/interrupt-resume.json`.
   - Frontend tools await the engine (`ENGINE-PROMPT.md`).
 - Explicit dependency `langgraph>=1.0,<2` (already resolved through the engine).
+- **Tenant key `decision_ollama_timeout_ms_by_tier`** (H-322, prismal-ai 3.22). The
+  per-sub-tier (`fast` | `accurate` → ms) sibling of the already tenant-tunable
+  `decision_ollama_timeout_ms` joins `ALLOWED_KEYS`. JSON-encode the map in
+  `tenant.yaml`; the engine rejects unknown tiers and non-positive budgets
+  (`500 tenant_config_invalid`).
 
 ### Fixed
 
@@ -49,8 +54,13 @@ All notable changes to `prismal-server`. The format follows
 
 ### Changed
 
-- **Engine floor raised to `prismal-ai>=3.20,<4`** (adds
-  `aclose_async_compiled_graph`, execution seam).- `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
+- **Engine floor raised to `prismal-ai>=3.22,<4`** (H-320, H-322). 3.20 adds
+  `aclose_async_compiled_graph` (execution seam). 3.22 adds the per-tier Ollama
+  budget above, hardens the engine's typed-decision prompt-injection screen and
+  raises transitive floors (`litellm!=1.107.0,>=1.100.4`, `mcp>=1.30,<2`,
+  `pypdf>=6.21.4`, `setuptools>=84.1`, `unstructured>=0.24.1`). No seam changed; the
+  graph-close workaround stays because 3.22 does not yet ship the engine fix.
+- `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
   unauthenticated request with an invalid body now gets `401` instead of `422`.
 
 ## [0.2.0] — 2026-11-02

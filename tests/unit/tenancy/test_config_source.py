@@ -234,6 +234,40 @@ def test_engine_builds_tenant_settings_from_source(
     assert settings.openrouter_api_key.get_secret_value() == CANARY
 
 
+def test_per_tier_ollama_budget_is_tenant_tunable() -> None:
+    """3.22: per-sub-tier sibling of ``decision_ollama_timeout_ms`` (H-322)."""
+    assert is_allowed_key("decision_ollama_timeout_ms_by_tier")
+
+
+def test_engine_builds_per_tier_ollama_budget_from_tenant(
+    tmp_path: Path, provider: TenantConfigProvider
+) -> None:
+    from prismal.core.config import build_settings
+
+    _tenant(
+        tmp_path,
+        "acme",
+        'decision_ollama_timeout_ms_by_tier: \'{"fast": 300, "accurate": 4000}\'\n',
+    )
+    source = provider.load("acme")
+    assert source is not None
+    settings = build_settings(source)
+    budgets = settings.decision_ollama_timeout_ms_by_tier
+    assert budgets == {"fast": 300, "accurate": 4000}
+
+
+def test_engine_refuses_unknown_tier_in_per_tier_budget(
+    tmp_path: Path, provider: TenantConfigProvider
+) -> None:
+    from prismal.core.config import build_settings
+
+    _tenant(tmp_path, "acme", "decision_ollama_timeout_ms_by_tier: '{\"turbo\": 10}'\n")
+    source = provider.load("acme")
+    assert source is not None
+    with pytest.raises(ValueError, match="TIMEOUT_MS_BY_TIER"):
+        build_settings(source)
+
+
 def test_yaml_error_does_not_chain_line_content(
     tmp_path: Path, provider: TenantConfigProvider
 ) -> None:

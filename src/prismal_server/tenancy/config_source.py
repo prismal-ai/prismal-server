@@ -122,6 +122,7 @@ ALLOWED_KEYS: frozenset[str] = frozenset(
         "decision_ollama_warmup",
         "decision_ollama_accurate_max_p95_ms",
         "decision_ollama_timeout_ms",
+        "decision_ollama_timeout_ms_by_tier",  # prismal-ai >= 3.22 (H-322)
         "decision_ollama_max_batch",
         "jev_api_key",
         "jev_model",
