@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prismal-server"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reference host for the prismal agent engine — a thin FastAPI/ASGI process serving prismal over REST/SSE and inbound A2A."
 readme = "README.md"
 # The engine (prismal-ai) requires Python >=3.13, so the host does too.
@@ -24,7 +24,7 @@ classifiers = [
 # The engine. PyPI distribution is `prismal-ai`; the import module is `prismal`.
 # Pinned per SPEC-RHB-NFR-004: the host couples only to the four engine seams.
 dependencies = [
-    "prismal-ai>=3.22,<4",
+    "prismal-ai>=3.22.1,<4",
     # Host-owned per-request traces (RH3-01); already resolved via the engine.
     "opentelemetry-sdk>=1.43,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.43,<2",

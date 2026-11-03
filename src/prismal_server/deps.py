@@ -76,22 +76,6 @@ class AgentCardBuilder(Protocol):
     ) -> dict[str, Any]: ...
 
 
-# Strong refs to the engine graph objects the host obtained from the execution
-# seam. prismal-ai 3.20.0's ``aclose_async_compiled_graph`` drops its cached
-# graph *before* closing the checkpointer connections; if nothing else holds the
-# graph, the aiosqlite connection is finalized (thread stopped) mid-close and the
-# close then waits forever. Holding these across the close avoids that
-# (HOST-PROMPT-engine-3.20.md; engine fix requested in ENGINE-PROMPT-graph-close).
-ENGINE_GRAPHS: list[Any] = []
-
-
-def hold_engine_graph(graph: Any) -> Any:
-    """Remember ``graph`` (one ref is enough: they share the checkpointer)."""
-    if not ENGINE_GRAPHS:
-        ENGINE_GRAPHS.append(graph)
-    return graph
-
-
 async def _default_builder(
     *, org_id: str | None, config_source: TenantConfigSource | None = None
 ) -> Any:
@@ -102,7 +86,7 @@ async def _default_builder(
     ``a2a_inbound_enabled``; ``get_async_compiled_graph`` is a cached singleton,
     so this stays cheap for non-A2A runtimes too.
     """
-    graph = hold_engine_graph(await get_async_compiled_graph())
+    graph = await get_async_compiled_graph()
     return await build_runtime(org_id=org_id, graph=graph, config_source=config_source)
 
 
