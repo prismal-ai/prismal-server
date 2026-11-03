@@ -47,19 +47,19 @@ All notable changes to `prismal-server`. The format follows
   (no more SIGKILL). A failing close is logged as a warning and shutdown still
   completes; fake-LLM mode skips it. The opt-in contract suite therefore exits on its
   own, and its session-end workaround (`tests/contract/conftest.py`) is removed.
-  - prismal-ai 3.20.0's close drops the cached graph *before* closing its connections,
-    so they are garbage-collected mid-close and the close hangs. The host holds the
-    graph while closing; the engine fix is requested in
-    `specs/host-v0.3-agui-resume/ENGINE-PROMPT-graph-close.md`.
+  - prismal-ai 3.20.0–3.22.0 dropped the cached graph *before* closing its
+    connections, so they were garbage-collected mid-close and the close hung. 3.22.1
+    closes first, so the host's interim graph hold (`ENGINE_GRAPHS` /
+    `hold_engine_graph`) is removed (H-3221).
 
 ### Changed
 
-- **Engine floor raised to `prismal-ai>=3.22,<4`** (H-320, H-322). 3.20 adds
+- **Engine floor raised to `prismal-ai>=3.22.1,<4`** (H-320, H-322, H-3221). 3.20 adds
   `aclose_async_compiled_graph` (execution seam). 3.22 adds the per-tier Ollama
   budget above, hardens the engine's typed-decision prompt-injection screen and
   raises transitive floors (`litellm!=1.107.0,>=1.100.4`, `mcp>=1.30,<2`,
-  `pypdf>=6.21.4`, `setuptools>=84.1`, `unstructured>=0.24.1`). No seam changed; the
-  graph-close workaround stays because 3.22 does not yet ship the engine fix.
+  `pypdf>=6.21.4`, `setuptools>=84.1`, `unstructured>=0.24.1`). 3.22.1 fixes the
+  graph-close ordering (above). No seam changed.
 - `POST /v1/agui` validates the run input after authentication. In strict auth mode, an
   unauthenticated request with an invalid body now gets `401` instead of `422`.
 

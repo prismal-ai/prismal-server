@@ -26,11 +26,9 @@ from prismal_server import __version__, openapi_examples
 from prismal_server.auth import AuthBackend, build_auth_backend
 from prismal_server.config import HostSettings, get_settings
 from prismal_server.deps import (
-    ENGINE_GRAPHS,
     AgentCardBuilder,
     GraphFactory,
     RuntimeRegistry,
-    hold_engine_graph,
 )
 from prismal_server.errors import register_exception_handlers
 from prismal_server.fake import (
@@ -54,19 +52,15 @@ async def _default_graph_closer() -> None:
     """Close the engine's cached graph checkpointers (execution seam, H-320).
 
     Its SQLite checkpointer runs on a non-daemon thread; left open, the
-    process cannot exit after shutdown (prismal-ai >= 3.20).
+    process cannot exit after shutdown. prismal-ai >= 3.22.1 closes the
+    connections before dropping its cached graph, so the host holds nothing.
     """
-    try:  # ENGINE_GRAPHS keeps the connections alive while they close
-        await aclose_async_compiled_graph()
-    finally:
-        ENGINE_GRAPHS.clear()
+    await aclose_async_compiled_graph()
 
 
 async def _default_graph_factory(*, tool_provider: Any = None) -> Any:
     """Obtain the compiled graph via the Execution seam."""
-    return hold_engine_graph(
-        await get_async_compiled_graph(tool_provider=tool_provider)
-    )
+    return await get_async_compiled_graph(tool_provider=tool_provider)
 
 
 def _default_agent_card_builder(

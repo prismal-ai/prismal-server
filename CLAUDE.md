@@ -45,8 +45,9 @@ RAG, tool, memory, security, or policy logic here is a bug:
 - [ ] New behaviour is **test-first** (TDD): failing test → minimal code → green.
 - [ ] Unit tests use `build_test_runtime` fakes (no live provider I/O); engine
       integration goes in the opt-in `contract` suite.
-- [ ] The engine dep stays pinned `prismal-ai>=3.22,<4` (3.20 closes the cached graph's checkpointer, H-320;
-      3.22 adds per-tier Ollama budgets and raises transitive security floors, H-322).
+- [ ] The engine dep stays pinned `prismal-ai>=3.22.1,<4` (3.20 closes the cached graph's checkpointer, H-320;
+      3.22 adds per-tier Ollama budgets and raises transitive security floors, H-322;
+      3.22.1 closes before dropping the graph, so the host holds nothing, H-3221).
 
 ## Common commands (once scaffolded — see TASKS RHB-00-01)
 

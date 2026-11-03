@@ -94,31 +94,3 @@ async def test_fake_mode_skips_engine_close(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(app_module, "aclose_async_compiled_graph", engine_close)
     await _run_lifespan(_app(rec, settings=HostSettings(host_fake_llm_mode=True)))
     assert "engine" not in rec.calls
-
-
-async def test_engine_graph_held_alive_during_close(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """3.20.0 drops its cached graph before closing; the host must hold it."""
-    import weakref
-
-    from prismal_server import deps
-
-    class Graph:
-        pass
-
-    graph = Graph()
-    ref = weakref.ref(graph)
-    deps.hold_engine_graph(graph)
-    del graph
-    alive: list[bool] = []
-
-    async def engine_close() -> None:
-        alive.append(ref() is not None)
-
-    monkeypatch.setattr(app_module, "aclose_async_compiled_graph", engine_close)
-    rec = Recorder()
-    await _run_lifespan(_app(rec))
-    assert alive == [True]
-    assert deps.ENGINE_GRAPHS == []
-    assert ref() is None  # released after the close
