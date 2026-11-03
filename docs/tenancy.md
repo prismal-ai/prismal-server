@@ -82,6 +82,9 @@ budget_max_cost_usd: 50
   floors, and any engine key added later) is refused with
   `500 tenant_config_invalid` (opaque message). Validation is eager, before the
   runtime is built, so a bad file never falls back silently.
+- Map-valued keys are JSON strings, e.g. the per-tier Ollama decision budget
+  (prismal-ai >= 3.22):
+  `decision_ollama_timeout_ms_by_tier: '{"fast": 300, "accurate": 4000}'`.
 - **Secrets never go in `tenant.yaml`.** `*_api_key` / `*_token` keys come only from
   the secrets backend, wrapped in `SecretStr` and never logged or returned:
   - `file` (default): `<host_secrets_dir>/<org_id>/<key>`, or
